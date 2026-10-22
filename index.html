@@ -215,7 +215,8 @@ const SUPA = {
   #landing { display: none; min-height: calc(100vh - 48px); align-items: center; justify-content: center; }
   body.gated #landing { display: flex; }
   .land-box { max-width: 460px; width: 100%; text-align: center; }
-  .land-box .logo { height: 64px; width: auto; margin: 0 auto 18px; display: block; }
+  .land-box .logo { height: 64px; max-width: 100%; width: auto; object-fit: contain; margin: 0 auto 18px; display: block; }
+  @media (max-width: 480px) { .land-box .logo { height: auto; width: 85%; } }
   .land-box p.lead { color: var(--muted); font-size: 15px; line-height: 1.6; margin: 0 0 28px; }
   .land-card { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 22px 24px; text-align: left; }
   .land-card label { margin-top: 14px; }
