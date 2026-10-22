@@ -1,0 +1,3251 @@
+<!DOCTYPE html>
+<html lang="sv">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Cue Sheet Builder</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+<script>
+// ===== MOLN-KONFIG =====
+// Fyll i från Supabase → Project Settings → API. Lämna tomt = appen körs lokalt utan inloggning.
+// anonKey är en publik nyckel (säker att ha i HTML) – all åtkomst styrs av RLS-reglerna i databasen.
+const SUPA = {
+  url: "",
+  anonKey: ""
+};
+</script>
+<style>
+  :root {
+    --bg: #14161a;
+    --panel: #1d2026;
+    --panel2: #23262d;
+    --border: #32363f;
+    --text: #e8eaed;
+    --muted: #9aa0a8;
+    --accent: #d4a843;
+    --accent-dim: #8a6f2e;
+    --danger: #c95555;
+    --ok: #5fae6e;
+    --green: #1faa3c;
+    --green-light: #8fd49a;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 24px;
+    background: var(--bg); color: var(--text);
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  h1 { font-size: 22px; margin: 0 0 4px; letter-spacing: .5px; }
+  h1 span { color: var(--accent); }
+  .sub { color: var(--muted); font-size: 13px; margin-bottom: 20px; }
+
+  .panel {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 10px; padding: 16px 18px; margin-bottom: 16px;
+  }
+  .meta-grid {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+    gap: 12px; align-items: end;
+  }
+  .meta-grid > div { display: flex; flex-direction: column; justify-content: flex-end; }
+  label { display: block; font-size: 11px; text-transform: uppercase; letter-spacing: .8px; color: var(--muted); margin-bottom: 4px; }
+  input, select {
+    width: 100%; background: var(--panel2); border: 1px solid var(--border);
+    color: var(--text); border-radius: 6px; padding: 7px 9px; font-size: 14px;
+    font-family: inherit;
+  }
+  input:focus, select:focus { outline: none; border-color: var(--accent-dim); }
+  input.tc { font-family: "SF Mono", Menlo, Consolas, monospace; letter-spacing: .5px; }
+  input.tc.invalid { border-color: var(--danger); }
+  input.drop-hover { border-color: var(--accent); background: rgba(212,168,67,.12); }
+
+  /* Statusfärger */
+  select.st-green { background: var(--green); color: #0d1a10; font-weight: 600; }
+  select.st-lightgreen { background: var(--green-light); color: #0d1a10; font-weight: 600; }
+  select.st-red { background: var(--danger); color: #fff; font-weight: 600; }
+  tr.row-cut td input:not(.cbtn), tr.row-cut td select { opacity: .55; text-decoration: line-through; }
+  tr.row-tint td { background: rgba(255,255,255,.07); }
+  tr.row-tint td input, tr.row-tint td select { background: rgba(255,255,255,.08); }
+  tr.row-tint:hover td { background: rgba(255,255,255,.09); }
+
+  /* Versionskryss (t.ex. "I QLab") */
+  td.col-ver { text-align: center; min-width: 90px; white-space: nowrap; }
+  td.col-ver input[type=checkbox] { width: 18px; height: 18px; accent-color: var(--green); cursor: pointer; vertical-align: middle; }
+  td.col-ver .ver-note { display: block; font-size: 11px; color: var(--muted); margin-top: 2px; }
+  td.col-ver .ver-note.stale { color: #f59e0b; font-weight: 600; }
+  td.col-ver .ver-note.ok { color: var(--green-light); }
+  td.tech-cell { box-shadow: inset 3px 0 0 #3b82f6; }
+  /* Stems-brickor */
+  td.col-stems { min-width: 120px; }
+  .stems { display: flex; flex-wrap: wrap; gap: 4px; }
+  label.stem {
+    display: inline-flex; align-items: center; gap: 4px; margin: 0; cursor: pointer;
+    font-size: 12px; text-transform: none; letter-spacing: 0; color: var(--text);
+    background: var(--panel2); border: 1px solid var(--border); border-radius: 12px; padding: 2px 8px 2px 5px;
+  }
+  label.stem.on { background: rgba(31,170,60,.18); border-color: var(--green); }
+  label.stem input[type=checkbox] { width: 14px; height: 14px; margin: 0; accent-color: var(--green); cursor: pointer; }
+  label.stem input:disabled { cursor: default; }
+  td.col-stems .ver-note { display: block; font-size: 11px; color: var(--muted); margin-top: 3px; }
+  td.col-stems .ver-note.stale { color: #f59e0b; font-weight: 600; }
+  td.col-stems .ver-note.ok { color: var(--green-light); }
+  th { vertical-align: bottom; }
+  .tech-tag { display: inline-block; font-size: 9px; line-height: 14px; color: #3b82f6; border: 1px solid #3b82f6; border-radius: 8px; padding: 0 6px; margin-bottom: 3px; text-transform: none; letter-spacing: 0; }
+
+  #detect-panel { display: none; }
+  #detect-panel.open { display: block; }
+  #hist-panel { display: none; }
+  #hist-panel.open { display: block !important; }
+  #arch-panel { display: none; }
+  #arch-panel.open { display: block; }
+  .det-grid { display: grid; grid-template-columns: 2fr 1fr 1fr 1fr 1fr 1fr; gap: 12px; align-items: end; }
+  @media (max-width: 1000px) { .det-grid { grid-template-columns: 1fr 1fr 1fr; } }
+  #det-wave { width: 100%; height: 110px; margin-top: 14px; background: var(--panel2); border: 1px solid var(--border); border-radius: 6px; }
+  .det-table { margin-top: 12px; }
+  .det-table td { min-width: 0; padding: 4px 10px; }
+  .det-table .mono { font-family: "SF Mono", Menlo, Consolas, monospace; }
+  .views { display: flex; gap: 8px; margin-bottom: 12px; }
+  .views button.active { background: var(--accent); border-color: var(--accent); color: #14161a; font-weight: 600; }
+  td.rec-session { background: rgba(95,174,110,.18); }
+  td.rec-cuehead { background: rgba(255,255,255,.05); }
+  td.rec-session input, td.rec-cuehead input { background: transparent; border: none; text-align: center; font-weight: 700; }
+  td.rec-cuehead input { font-size: 15px; }
+  th input { background: var(--panel2); border: 1px dashed var(--border); font-size: 12px; padding: 4px 6px; }
+  .table-wrap { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; }
+  #cue-table { width: 100%; }
+  td.col-text { min-width: 110px; }
+  td.col-text[data-col="titel"] { min-width: 140px; width: 150px; }
+  td.col-text[data-col="filename"] { min-width: 170px; }
+  /* Musik IN/UT och Beskrivning: smalare, hela texten visas som tooltip vid hover */
+  td.col-text[data-col="desc"], td.col-text[data-col="musin"], td.col-text[data-col="musout"] { min-width: 110px; }
+  td.col-text input { text-overflow: ellipsis; }
+
+  /* Egen, tydlig tooltip för avklippt text */
+  #tip {
+    position: fixed; z-index: 2000; display: none; max-width: 420px;
+    background: #2b2f37; color: var(--text); border: 1px solid var(--accent-dim);
+    border-radius: 8px; padding: 10px 14px; font-size: 15px; line-height: 1.45;
+    box-shadow: 0 8px 28px rgba(0,0,0,.5); white-space: pre-wrap; word-break: break-word; pointer-events: none;
+  }
+  #tip.show { display: block; }
+  td.col-sel { min-width: 150px; }
+  td.col-sel[data-col="status"] { min-width: 190px; }
+  th {
+    text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: .8px;
+    color: var(--muted); padding: 6px 8px; border-bottom: 1px solid var(--border);
+    white-space: nowrap;
+  }
+  td { padding: 5px 4px; border-bottom: 1px solid var(--border); vertical-align: middle; min-width: 90px; }
+  td.col-no { min-width: 0; width: 1%; padding: 5px 2px; }
+  td.col-no input { width: 46px; padding: 7px 3px; text-align: center; font-weight: 600; color: var(--accent); }
+  td.col-check { text-align: center; min-width: 56px; }
+  td.col-short { min-width: 0; width: 1%; white-space: nowrap; padding: 5px 2px; }
+  td.col-short input { width: auto; min-width: 40px; text-align: center; padding: 7px 3px; font-variant-numeric: tabular-nums; }
+  td.col-sec { min-width: 0; width: 1%; padding: 5px 2px; }
+  td.col-sec input { width: 36px; text-align: center; padding: 7px 2px; -moz-appearance: textfield; }
+  td.col-check { min-width: 0; width: 1%; padding: 5px 4px; }
+  td.col-ver { min-width: 0; width: 1%; }
+  td.col-sec input::-webkit-outer-spin-button, td.col-sec input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+  td.col-date { min-width: 0; width: 150px; }
+  td.col-ts { min-width: 0; white-space: nowrap; }
+  .ts { font-size: 12px; color: var(--muted); font-family: "SF Mono", Menlo, Consolas, monospace; }
+  td.col-check input[type=checkbox] { width: 18px; height: 18px; accent-color: var(--green); cursor: pointer; }
+  td.act { min-width: 0; white-space: nowrap; }
+  tr:hover td { background: rgba(255,255,255,.02); }
+
+  button {
+    background: var(--panel2); border: 1px solid var(--border); color: var(--text);
+    border-radius: 6px; padding: 7px 14px; font-size: 13px; cursor: pointer;
+    font-family: inherit;
+  }
+  button:hover { border-color: var(--accent-dim); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #14161a; font-weight: 600; }
+  button.primary:hover { filter: brightness(1.1); }
+  button.icon { padding: 3px 8px; font-size: 12px; color: var(--muted); }
+  button.icon:hover { color: var(--text); }
+  button.icon.del:hover { color: var(--danger); border-color: var(--danger); }
+  button.danger { color: var(--danger); }
+  button.danger:hover { border-color: var(--danger); background: rgba(201,85,85,.12); }
+
+  .toolbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  body.commenter .admin-only { display: none !important; }
+  body.commenter .meta-grid input, body.commenter .meta-grid select { opacity: .7; }
+  input:disabled, select:disabled { opacity: .75; cursor: default; }
+  .role-pill { font-size: 11px; padding: 2px 8px; border-radius: 10px; font-weight: 700; letter-spacing: .4px; }
+  .role-pill.admin { background: var(--accent); color: #14161a; }
+  .role-pill.commenter { background: #3b82f6; color: #fff; }
+  .proj-row { display: flex; align-items: center; gap: 10px; padding: 9px 10px; border-radius: 8px; background: var(--panel2); margin-bottom: 8px; }
+  .proj-row b { font-size: 14px; }
+  .proj-row .muted { color: var(--muted); font-size: 12px; }
+  .inv-link { font-family: "SF Mono", Menlo, monospace; font-size: 12px; word-break: break-all; background: var(--panel2); padding: 8px 10px; border-radius: 6px; margin: 6px 0; }
+  img.avatar { width: 22px; height: 22px; border-radius: 50%; vertical-align: middle; margin-right: 6px; }
+  .toolbar .spacer { flex: 1; }
+  .totals { color: var(--muted); font-size: 13px; text-align: right; }
+  .totals b { color: var(--text); }
+
+  /* Kolumnhanterare */
+  #col-panel { display: none; }
+  #col-panel.open { display: block; }
+  .col-row { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
+  .col-row input[type=text] { flex: 1; max-width: 280px; }
+  .col-row .opts { flex: 2; max-width: none; }
+  .col-type { color: var(--muted); font-size: 12px; width: 70px; }
+  .col-hint { color: var(--muted); font-size: 12px; margin-top: 10px; }
+
+  .toast {
+    position: fixed; bottom: 24px; right: 24px; background: var(--panel2);
+    border: 1px solid var(--accent-dim); border-radius: 8px; padding: 10px 16px;
+    opacity: 0; transition: opacity .3s; pointer-events: none; font-size: 13px;
+  }
+  .toast.show { opacity: 1; }
+  .empty { text-align: center; color: var(--muted); padding: 30px 0; }
+
+  /* Utskrift / PDF */
+  #print-area { display: none; }
+  @media print {
+    @page { size: A4 landscape; margin: 10mm 10mm 12mm; }
+    body { background: #fff !important; color: #111 !important; padding: 0 !important; font-size: 10px; }
+    body > *:not(#print-area) { display: none !important; }
+    #print-area { display: block !important; }
+    .pr-head { display: flex; align-items: baseline; gap: 14px; margin-bottom: 8px; border-bottom: 2px solid #111; padding-bottom: 6px; }
+    .pr-head h2 { margin: 0; font-size: 18px; letter-spacing: .5px; }
+    .pr-head .pr-meta { color: #444; font-size: 11px; }
+    .pr-head .pr-right { margin-left: auto; color: #666; font-size: 10px; text-align: right; }
+    table.pr { width: 100%; border-collapse: collapse; page-break-inside: auto; }
+    table.pr tr { page-break-inside: avoid; }
+    table.pr thead { display: table-header-group; }
+    table.pr th { text-align: left; font-size: 9px; text-transform: uppercase; letter-spacing: .6px; color: #333; background: #e9e9e9; padding: 4px 5px; border: 1px solid #bbb; }
+    table.pr td { padding: 3px 5px; border: 1px solid #ccc; vertical-align: top; font-size: 10px; white-space: pre-wrap; word-break: break-word; }
+    table.pr td.c { text-align: center; white-space: nowrap; }
+    table.pr td.no { font-weight: 700; text-align: center; white-space: nowrap; }
+    table.pr td.st-green { background: #c6efcf; font-weight: 600; }
+    table.pr td.st-lightgreen { background: #e2f5e6; font-weight: 600; }
+    table.pr td.st-red { background: #f4c7c7; font-weight: 600; }
+    table.pr tr.row-cut td { color: #999; text-decoration: line-through; }
+    table.pr tr.row-tint td { background: #f0f0f0; }
+    table.pr .ver-ok { color: #1a7f37; font-weight: 700; }
+    table.pr .ver-stale { color: #b45309; font-weight: 700; }
+    table.pr .cm-k { font-size: 8px; font-weight: 700; text-transform: uppercase; color: #555; }
+    .pr-foot { margin-top: 8px; color: #555; font-size: 10px; display: flex; gap: 18px; }
+  }
+
+  /* Kommentarsknapp i tabellen */
+  td.col-comment { min-width: 0; width: 48px; text-align: center; }
+  .cbtn {
+    width: 32px; height: 32px; padding: 0; border-radius: 8px;
+    display: inline-flex; align-items: center; justify-content: center;
+    border: 1px solid transparent; color: #fff; font-weight: 800; font-size: 18px;
+    line-height: 1; transition: transform .1s, filter .15s;
+  }
+  .cbtn svg { width: 18px; height: 18px; fill: currentColor; display: block; }
+  .cbtn:hover { filter: brightness(1.15); transform: translateY(-1px); }
+  .cbtn.c-none { background: #3b82f6; border-color: #3b82f6; }
+  .cbtn.c-open { background: #f59e0b; border-color: #f59e0b; color: #1a1200; }
+  .cbtn.c-answered { background: var(--green); border-color: var(--green); color: #0d1a10; }
+
+  /* Kommentars-popup */
+  #cm-overlay, .overlay {
+    display: none; position: fixed; inset: 0; background: rgba(0,0,0,.6);
+    z-index: 1000; align-items: center; justify-content: center; padding: 20px;
+  }
+  #cm-overlay.open, .overlay.open { display: flex; }
+  .tpl-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; padding: 16px 18px; }
+  .tpl-card {
+    background: var(--panel2); border: 2px solid var(--border); border-radius: 10px;
+    padding: 14px; cursor: pointer; text-align: left;
+  }
+  .tpl-card:hover, .tpl-card.sel { border-color: var(--accent); }
+  .tpl-card b { display: block; font-size: 15px; margin-bottom: 4px; }
+  .tpl-card span { color: var(--muted); font-size: 12px; }
+  .cm-box {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+    width: 100%; max-width: 560px; max-height: 90vh; display: flex; flex-direction: column;
+    box-shadow: 0 20px 60px rgba(0,0,0,.5);
+  }
+  .cm-head {
+    padding: 14px 18px; border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; gap: 10px;
+  }
+  .cm-head b { font-size: 15px; }
+  .cm-head .cm-sub { color: var(--muted); font-size: 12px; margin-left: auto; }
+  .cm-thread { padding: 12px 18px; overflow-y: auto; flex: 1; min-height: 60px; }
+  .cm-empty { color: var(--muted); font-size: 13px; text-align: center; padding: 14px 0; }
+  .cm-item {
+    display: flex; gap: 10px; align-items: flex-start; padding: 9px 10px;
+    border-radius: 8px; background: var(--panel2); margin-bottom: 8px;
+  }
+  .cm-item .cm-badge {
+    flex: none; font-size: 10px; text-transform: uppercase; letter-spacing: .6px;
+    font-weight: 700; padding: 2px 7px; border-radius: 10px; margin-top: 2px;
+  }
+  .cm-badge.k-comment { background: #f59e0b; color: #1a1200; }
+  .cm-badge.k-answer { background: var(--green); color: #0d1a10; }
+  .cm-badge.k-note { background: var(--border); color: var(--text); }
+  .cm-item .cm-text { flex: 1; white-space: pre-wrap; word-break: break-word; font-size: 13.5px; }
+  .cm-item .cm-ts { color: var(--muted); font-size: 11px; margin-top: 3px; }
+  .cm-item button.icon { flex: none; }
+  .cm-input { padding: 0 18px 12px; }
+  .cm-input textarea {
+    width: 100%; min-height: 80px; resize: vertical; background: var(--panel2);
+    border: 1px solid var(--border); color: var(--text); border-radius: 6px;
+    padding: 8px 10px; font: inherit; font-size: 14px;
+  }
+  .cm-input textarea:focus { outline: none; border-color: var(--accent-dim); }
+  .cm-foot {
+    padding: 12px 18px; border-top: 1px solid var(--border);
+    display: flex; gap: 8px; align-items: center;
+  }
+  .cm-foot .spacer { flex: 1; }
+  button.cm-comment { background: #f59e0b; border-color: #f59e0b; color: #1a1200; font-weight: 600; }
+  button.cm-answered { background: var(--green); border-color: var(--green); color: #0d1a10; font-weight: 600; }
+  button.cm-comment:hover, button.cm-answered:hover { filter: brightness(1.1); }
+</style>
+</head>
+<body>
+
+<h1>CUE SHEET <span>BUILDER</span></h1>
+<div class="sub" id="sub-line">Musik-cue-sheets för film, TV och teater · autosparas i webbläsaren</div>
+
+<!-- Molnrad (visas bara när SUPA är ifylld) -->
+<div class="panel toolbar" id="cloud-bar" style="display:none">
+  <span id="cloud-user" class="totals" style="text-align:left"></span>
+  <button class="primary" id="btn-login" onclick="cloudLogin()">Logga in med GitHub</button>
+  <button id="btn-projects" style="display:none" onclick="openProjects()">Produktioner…</button>
+  <button id="btn-invite" class="admin-only" style="display:none" onclick="openInvite()">Bjud in…</button>
+  <span id="cloud-proj" class="totals" style="text-align:left"></span>
+  <div class="spacer"></div>
+  <span id="cloud-status" class="totals"></span>
+  <button id="btn-logout" style="display:none" onclick="cloudLogout()">Logga ut</button>
+</div>
+
+<!-- Produktioner (molnprojekt) -->
+<div id="proj-overlay" class="overlay" onmousedown="projDown=(event.target===this)" onmouseup="if(projDown&&event.target===this)closeProjects();projDown=false">
+  <div class="cm-box" role="dialog" aria-modal="true" style="max-width:640px">
+    <div class="cm-head"><b>Produktioner</b><span class="cm-sub" id="proj-sub"></span></div>
+    <div class="cm-thread" id="proj-list"></div>
+    <div class="cm-foot">
+      <button class="primary" onclick="closeProjects();openTemplatePicker()">+ Ny produktion</button>
+      <div class="spacer"></div>
+      <button onclick="closeProjects()">Stäng</button>
+    </div>
+  </div>
+</div>
+
+<!-- Bjud in / medlemmar -->
+<div id="inv-overlay" class="overlay" onmousedown="invDown=(event.target===this)" onmouseup="if(invDown&&event.target===this)closeInvite();invDown=false">
+  <div class="cm-box" role="dialog" aria-modal="true" style="max-width:640px">
+    <div class="cm-head"><b>Bjud in · medlemmar</b><span class="cm-sub" id="inv-sub"></span></div>
+    <div class="cm-thread" id="inv-body"></div>
+    <div class="cm-foot">
+      <button class="primary" onclick="createInvite('commenter')">Skapa länk: Read &amp; Comment</button>
+      <button onclick="createInvite('admin')">Skapa länk: Admin</button>
+      <div class="spacer"></div>
+      <button onclick="closeInvite()">Stäng</button>
+    </div>
+  </div>
+</div>
+
+<div class="panel toolbar">
+  <button class="admin-only" onclick="openTemplatePicker()">Ny cue-sheet…</button>
+  <button class="admin-only" onclick="document.getElementById('file-in').click()">Öppna projekt</button>
+  <button onclick="exportJson()">Spara projekt (.json)</button>
+  <button class="admin-only" onclick="toggleHistory()">Historik…</button>
+  <button onclick="openExport()">Exportera…</button>
+  <input type="file" id="file-in" accept=".json" style="display:none" onchange="importJson(event)">
+  <div class="spacer"></div>
+  <span class="totals" id="tpl-badge"></span>
+</div>
+
+<div class="panel">
+  <div class="meta-grid">
+    <div data-m="prod"><label id="l-prod">Produktion</label><input id="m-prod" placeholder="TITLE"></div>
+    <div data-m="ep"><label id="l-ep">Avsnitt</label><input id="m-ep" placeholder="EP01"></div>
+    <div data-m="cut"><label id="l-cut">Latest cut</label><input id="m-cut" placeholder="t.ex. 260326"></div>
+    <div data-m="datum"><label>Datum</label><input id="m-datum" type="date"></div>
+    <div data-m="fps"><label>Frame rate</label>
+      <select id="m-fps">
+        <option value="24">24 fps (23.976/24)</option>
+        <option value="25" selected>25 fps (PAL)</option>
+        <option value="30">30 fps (29.97/30)</option>
+      </select>
+    </div>
+    <div data-m="team"><label title="Namnen används i Assign-kolumnerna">Team (kommaseparerat)</label><input id="m-team" placeholder="Name of team members"></div>
+  </div>
+</div>
+
+<!-- Export -->
+<div id="exp-overlay" class="overlay" onmousedown="expDown=(event.target===this)" onmouseup="if(expDown&&event.target===this)closeExport();expDown=false">
+  <div class="cm-box" role="dialog" aria-modal="true" style="max-width:480px">
+    <div class="cm-head"><b>Exportera</b><span class="cm-sub" id="exp-sub"></span></div>
+    <div class="tpl-grid" style="grid-template-columns:1fr">
+      <button class="tpl-card" onclick="closeExport();exportXlsx()"><b>Excel (.xlsx)</b><span>Alla kolumner, en rad per cue. Öppnas i Excel/Numbers/Google Sheets.</span></button>
+      <button class="tpl-card" onclick="closeExport();exportPdf('view')"><b>PDF – aktuell vy</b><span>Kolumnerna i den View du står i. Liggande A4, ljus bakgrund.</span></button>
+      <button class="tpl-card" onclick="closeExport();exportPdf('all')"><b>PDF – alla kolumner</b><span>Allt på en gång. Kan bli brett – webbläsaren skalar ned.</span></button>
+    </div>
+    <div class="col-hint" style="padding:0 18px 12px">PDF: i utskriftsdialogen som öppnas, välj <b>Spara som PDF</b> (Mac: menyn "PDF" nere till vänster, Windows: skrivare "Microsoft Print to PDF").</div>
+    <div class="cm-foot"><div class="spacer"></div><button onclick="closeExport()">Avbryt</button></div>
+  </div>
+</div>
+<div id="print-area"></div>
+
+<!-- Mallväljare (Ny cue-sheet) -->
+<div id="tpl-overlay" class="overlay" onmousedown="tplDown=(event.target===this)" onmouseup="if(tplDown&&event.target===this)closeTemplatePicker();tplDown=false">
+  <div class="cm-box" role="dialog" aria-modal="true" style="max-width:520px">
+    <div class="cm-head"><b>Ny cue-sheet</b><span class="cm-sub">Välj mall</span></div>
+    <div class="tpl-grid" id="tpl-grid"></div>
+    <div class="cm-input" id="tpl-name-wrap" style="display:none">
+      <label>Produktionens namn</label>
+      <input id="tpl-name" placeholder="t.ex. Fröken Julie">
+    </div>
+    <div class="col-hint" style="padding:0 18px 12px" id="tpl-hint">Kolumnerna kan ändras i efterhand under Kolumner…</div>
+    <div class="cm-foot">
+      <button class="primary" onclick="confirmTemplate()">Skapa</button>
+      <div class="spacer"></div>
+      <button onclick="closeTemplatePicker()">Avbryt</button>
+    </div>
+  </div>
+</div>
+
+<div class="panel" id="col-panel">
+  <label style="margin-bottom:10px">Kolumner</label>
+  <div id="col-list"></div>
+  <div style="display:flex; gap:8px; margin-top:12px">
+    <button onclick="addColumn()">+ Ny kolumn</button>
+    <button onclick="addColumn('select')">+ Ny dropdown-kolumn</button>
+    <button onclick="addColumn('tc')">+ Ny tidkodskolumn</button>
+    <button onclick="addColumn('check')">+ Ny kryssbox-kolumn</button>
+    <button onclick="addColumn('vercheck')">+ Ny versionskryss-kolumn</button>
+    <select id="preset-sel" style="width:auto;margin-left:auto" onchange="if(this.value){addPreset(this.value);this.value=''}">
+      <option value="">+ Förslag…</option>
+    </select>
+  </div>
+  <div class="col-hint">Dropdown-kolumner: ange valen kommaseparerade. Assign-kolumnerna hämtar namn från Team-fältet ovan. Vy-menyn per kolumn styr i vilken View den visas — nya kolumner hamnar i aktiv vy.</div>
+</div>
+
+<div class="panel" id="hist-panel" style="display:none">
+  <label style="margin-bottom:10px">Historik — snapshots</label>
+  <div id="hist-list"></div>
+  <div class="col-hint">Snapshots skapas automatiskt (max var 2:a minut) och alltid före rensning, import och återställning. De 30 senaste sparas.</div>
+</div>
+
+<div class="panel" id="detect-panel">
+  <label style="margin-bottom:10px">Auto-detektera cuer i ljudfil</label>
+  <div class="det-grid">
+    <div><label>Ljudfil (WAV säkrast)</label><input type="file" id="audio-in" accept="audio/*,.wav,.aif,.aiff,.mp3,.flac"></div>
+    <div><label>Filens start-TC</label><input id="det-offset" class="tc" value="01:00:00:00"></div>
+    <div><label>Tröskel (dBFS)</label><input id="det-thresh" type="number" value="-70" step="1"></div>
+    <div><label>Min tystnad mellan cuer (s)</label><input id="det-gap" type="number" value="2" step="0.5" min="0.5"></div>
+    <div><label>Min cue-längd (s)</label><input id="det-minlen" type="number" value="4" step="1" min="1"></div>
+    <div style="display:flex;align-items:flex-end"><button class="primary" style="width:100%" onclick="analyzeAudio()">Analysera</button></div>
+  </div>
+  <div id="det-status" class="col-hint"></div>
+  <canvas id="det-wave" style="display:none"></canvas>
+  <div id="det-playinfo" class="col-hint" style="display:none">
+    Håll ner musknappen i vågformen och dra för att lyssna · klicka för att flytta spelhuvudet ·
+    <span id="det-time" style="font-family:'SF Mono',Menlo,monospace;color:var(--text)"></span>
+  </div>
+  <audio id="det-audio" preload="auto" style="display:none"></audio>
+  <div id="det-tools" style="display:none;gap:8px;margin-top:10px;flex-wrap:wrap">
+    <button onclick="splitAtPlayhead()">Dela cue vid spelhuvudet</button>
+    <button onclick="mergeSelected()">Slå ihop markerade till en</button>
+    <button onclick="detIdentify()">Identifiera innehåll (SongSpot)</button>
+    <span style="flex:1"></span>
+    <button onclick="zoomWave(0.5)">Zooma in +</button>
+    <button onclick="zoomWave(2)">Zooma ut −</button>
+    <button onclick="zoomAll()">Hela filen</button>
+  </div>
+  <div id="det-results"></div>
+</div>
+
+<div class="panel" id="arch-panel">
+  <label style="margin-bottom:10px">SongSpot — hitta ursprunget till omdöpta skisser</label>
+  <div class="det-grid" style="grid-template-columns:2fr 1fr 1fr 2fr 1fr">
+    <div><label>Skanna mapp/disk (alla undermappar fingerprintas)</label>
+      <button style="width:100%" onclick="pickArchiveDir()">Välj mapp att skanna…</button>
+      <input type="file" id="arch-dir-in" webkitdirectory multiple style="display:none" onchange="archiveScan(this.files)">
+    </div>
+    <div><label>Min längd (s)</label><input id="arch-min" type="number" value="3" min="0" step="1"></div>
+    <div><label>Max längd (min)</label><input id="arch-max" type="number" value="20" min="1" step="1"></div>
+    <div><label>Identifiera okänd fil (även kort utklipp)</label><input type="file" id="arch-id-in" accept="audio/*,.wav,.aif,.aiff,.mp3,.flac,.m4a"></div>
+    <div style="display:flex;align-items:flex-end"><button class="primary" style="width:100%" onclick="archiveIdentify()">Identifiera</button></div>
+  </div>
+  <div id="arch-status" class="col-hint"></div>
+  <div id="arch-results"></div>
+  <div style="display:flex;gap:8px;margin-top:10px;align-items:center">
+    <span id="arch-count" class="col-hint" style="margin:0"></span>
+    <span style="flex:1"></span>
+    <button class="danger" onclick="archiveClear()">Töm arkivet</button>
+  </div>
+</div>
+
+<div class="panel">
+  <div class="views" id="view-bar">
+    <button onclick="setView(1)" data-v="1">View One</button>
+    <button onclick="setView(2)" data-v="2">View Two</button>
+    <button onclick="setView(3)" data-v="3">View Three</button>
+    <button onclick="toggleRecording()" data-v="rec">Recording</button>
+  </div>
+  <div style="margin: 8px 0 4px;" class="admin-only">
+    <button class="primary" onclick="addCue()">+ Lägg till cue</button>
+  </div>
+  <div id="rec-area" style="display:none"></div>
+  <div class="table-wrap" id="main-wrap">
+    <table id="cue-table">
+      <thead><tr id="head-row"></tr></thead>
+      <tbody id="cue-body"></tbody>
+    </table>
+  </div>
+  <div id="empty-msg" class="empty">Inga cuer ännu — klicka "+ Lägg till cue".</div>
+</div>
+
+<div class="panel toolbar">
+  <button class="admin-only" onclick="toggleDetect()">Auto-detektera cuer…</button>
+  <button class="admin-only" onclick="toggleArchive()">SongSpot</button>
+  <button class="admin-only" onclick="document.getElementById('edl-in').click()">Importera EDL/XML…</button>
+  <input type="file" id="edl-in" accept=".edl,.xml,.txt" style="display:none" onchange="importEdlXml(event)">
+  <button class="admin-only" onclick="toggleCols()">Kolumner…</button>
+  <button class="admin-only danger" onclick="clearCues()">Rensa cuer</button>
+  <div class="spacer"></div>
+  <div class="totals" id="totals"></div>
+</div>
+
+<div class="toast" id="toast"></div>
+<div id="tip"></div>
+
+<!-- Kommentars-popup -->
+<div id="cm-overlay" onmousedown="cmDown=(event.target===this)" onmouseup="if(cmDown&&event.target===this)closeComment();cmDown=false">
+  <div class="cm-box" role="dialog" aria-modal="true">
+    <div class="cm-head">
+      <b id="cm-title">Kommentar</b>
+      <span class="cm-sub" id="cm-sub"></span>
+    </div>
+    <div class="cm-thread" id="cm-thread"></div>
+    <div class="cm-input">
+      <textarea id="cm-text" placeholder="Skriv kommentar eller svar…"></textarea>
+    </div>
+    <div class="cm-foot">
+      <button class="cm-comment" onclick="cmComment()">Comment</button>
+      <button class="cm-answered" onclick="cmAnswered()">Answered</button>
+      <button class="danger" onclick="cmReset()">Reset</button>
+      <div class="spacer"></div>
+      <button onclick="closeComment()">Stäng</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const DEFAULT_COLUMNS = [
+  { id: "no",       label: "No.",             type: "no",     group: 0 },
+  { id: "titel",    label: "Title",           type: "text",   group: 0 },
+  { id: "status",   label: "Status",          type: "select", group: 0,
+    options: ["STILL TO WRITE", "IN PROGRESS", "WAITING FOR FEEDBACK", "REWRITE",
+              "REVISE", "APPROVED", "Approved until further notice"] },
+  { id: "compstat", label: "Composer Status", type: "select", group: 1,
+    options: ["OK", "Pending", "Not OK"] },
+  { id: "filename", label: "File Name",       type: "text",   group: 1 },
+  { id: "tc",       label: "TC",              type: "tc",     group: 1 },
+  { id: "filmcut",  label: "Film Cut",        type: "text",   group: 1 },
+  { id: "assign",   label: "Assign",          type: "assign", group: 1 },
+  { id: "diegetic", label: "Diegetisk",       type: "check",  group: 1, tint: true },
+  { id: "comments", label: "Comments",        type: "comment", group: 1 },
+  { id: "orchrec",  label: "Orch Rec",        type: "text",   group: 2 },
+  { id: "solos",    label: "Solos",           type: "text",   group: 2 },
+  { id: "btassign", label: "BT Assign",       type: "assign", group: 2 },
+  { id: "bounced",  label: "Bounced",         type: "check",  group: 2 },
+  { id: "sourcecue",label: "Source Cue",      type: "text",   group: 2 },
+  { id: "solosimp", label: "Solos Imported",  type: "check",  group: 2 },
+  { id: "orchimp",  label: "Orch Imported",   type: "check",  group: 2 },
+  { id: "premix",   label: "Pre Mix Status",  type: "select", group: 3,
+    options: ["Full mix settings imported"] },
+  { id: "mixprep",  label: "MIXPREP",         type: "check",  group: 3 },
+  { id: "mixver",   label: "Mix Version",     type: "text",   group: 3 },
+  { id: "mixcomm",  label: "Mix Prep Comments", type: "text", group: 3 },
+];
+const COL_VERSION = 4;
+const GROUP_NAMES = ["Alltid synlig", "View One", "View Two", "View Three"];
+
+// ---------- Mallar ----------
+// col.tech = true  → kolumnen får ändras av Read & Comment-rollen (t.ex. ljudteknikern)
+// type "vercheck"  → kryssruta som minns vilken version den bockades mot (ref = versionskolumnens id)
+const STATUS_OPTS = ["STILL TO WRITE", "IN PROGRESS", "WAITING FOR FEEDBACK", "REWRITE",
+                     "REVISE", "APPROVED", "Approved until further notice"];
+const TEMPLATES = {
+  film: {
+    name: "Film / TV",
+    desc: "Tidkodsbaserat. Views för komposition, orkester/inspelning och mix.",
+    meta: { prod: "Produktion", ep: "Avsnitt", cut: "Latest cut", datum: true, fps: true, team: true },
+    columns: DEFAULT_COLUMNS,
+    recording: true
+  },
+  teater: {
+    name: "Teater",
+    desc: "Manussida och go-lines i stället för tidkod. Version levererad vs. inladdad i QLab.",
+    meta: { prod: "Produktion", ep: "Teater / scen", cut: "Manusversion", datum: true, fps: false, team: true },
+    columns: [
+      { id: "no",       label: "No.",             type: "no",       group: 0 },
+      { id: "titel",    label: "Title",           type: "text",     group: 0 },
+      { id: "status",   label: "Status",          type: "select",   group: 0, options: STATUS_OPTS.concat(["STRUKEN"]) },
+      { id: "filename", label: "File Name",       type: "text",     group: 1 },
+      { id: "version",  label: "Version",         type: "short",    group: 1 },
+      { id: "qlab",     label: "I QLab",          type: "vercheck", group: 1, ref: "version", tech: true },
+      { id: "qlabno",   label: "QLab-nr",         type: "short",    group: 1, tech: true },
+      { id: "page",     label: "Manussida",       type: "short",    group: 1 },
+      { id: "musin",    label: "Musik IN",        type: "text",     group: 1 },
+      { id: "musout",   label: "Musik UT",        type: "text",     group: 1 },
+      { id: "dur",      label: "Längd",           type: "short",    group: 2 },
+      { id: "fadein",   label: "Fade in",         type: "sec",      group: 1 },
+      { id: "fadeout",  label: "Fade ut",         type: "sec",      group: 1 },
+      { id: "desc",     label: "Beskrivning",     type: "text",     group: 1 },
+      { id: "sent",     label: "Skickad",         type: "check",    group: 1 },
+      { id: "diegetic", label: "Diegetisk",       type: "check",    group: 1, tint: true },
+      { id: "comments", label: "Comments",        type: "comment",  group: 1 },
+      { id: "sketch",   label: "Skissförslag",    type: "text",     group: 2 },
+      { id: "mix",      label: "MIX",             type: "check",    group: 2 },
+      { id: "assign",   label: "Assign",          type: "assign",   group: 2 },
+      { id: "stems",    label: "Stems",           type: "text",     group: 3 },
+      { id: "stemsok",  label: "Stems i QLab",    type: "stemcheck", group: 3, ref: "stems", ver: "version", tech: true },
+    ],
+    recording: false
+  }
+};
+function tpl() { return TEMPLATES[state.template] || TEMPLATES.film; }
+
+// Färdiga kolumnförslag (läggs till från Kolumner… vid behov)
+// type "short" = smalt textfält · "sec" = sekunder, max två siffror · "date" = datum
+// "ts" = sätts automatiskt när raden ändras · "dur" = räknas ut från TC in/TC ut om de finns
+const PRESETS = {
+  teater: [
+    { id: "actscene", label: "Akt/Scen",       type: "short",  group: 1, hint: "t.ex. 2:3" },
+    { id: "ctype",    label: "Typ",            type: "select", group: 1, options: ["Underscore", "Sång", "Ljudeffekt", "Atmosfär", "Övergång", "Diegetisk"] },
+    { id: "loop",     label: "Loop",           type: "check",  group: 1, hint: "cuen ska loopa (bakgrunder)" },
+    { id: "updated",  label: "Senast ändrad",  type: "ts",     group: 0 },
+  ],
+  film: [
+    { id: "scene",    label: "Scen",           type: "short",  group: 1, hint: "scennummer från manus" },
+    { id: "tcout",    label: "TC ut",          type: "tc",     group: 1 },
+    { id: "dur",      label: "Längd",          type: "dur",    group: 1, hint: "räknas ut från TC/TC ut" },
+    { id: "deadline", label: "Deadline",       type: "date",   group: 1 },
+    { id: "updated",  label: "Senast ändrad",  type: "ts",     group: 0 },
+  ]
+};
+function presetsAvailable() {
+  return (PRESETS[state.template] || []).filter(p => !state.columns.some(c => c.id === p.id));
+}
+function addPreset(id) {
+  const p = (PRESETS[state.template] || []).find(x => x.id === id);
+  if (!p || state.columns.some(c => c.id === id)) return;
+  const col = JSON.parse(JSON.stringify(p)); delete col.hint;
+  if (col.group === undefined) col.group = state.activeView || 1;
+  // placera "Senast ändrad" sist, annars före Comments om den finns
+  const ci = state.columns.findIndex(c => c.id === "comments");
+  if (col.type === "ts" || ci < 0) state.columns.push(col); else state.columns.splice(ci, 0, col);
+  render(); renderCols();
+  toast(`Kolumn tillagd: ${col.label}`);
+}
+
+const TPL_VERSION = 6;
+// Uppdatera redan sparade ark när en mall justeras
+function migrateTemplate(s) {
+  if ((s.tplVer || 1) >= TPL_VERSION) return;
+  if (s.template === "film" && (s.tplVer || 1) < 4 && !s.columns.some(c => c.id === "diegetic")) {
+    const ci = s.columns.findIndex(c => c.id === "comments");
+    s.columns.splice(ci >= 0 ? ci : s.columns.length, 0, { id: "diegetic", label: "Diegetisk", type: "check", group: 1, tint: true });
+  }
+  if (s.template === "teater") {
+    const col = id => s.columns.find(c => c.id === id);
+    const sent = col("sent"), dieg = col("diegetic"), sketch = col("sketch"), comments = col("comments");
+    if (sent && sent.label === "Skickad till ljudtekniker") sent.label = "Skickad";
+    if (dieg && dieg.label === "Diegetisk musik") dieg.label = "Diegetisk";
+    if (dieg) dieg.tint = true;
+    if (sketch && sketch.type === "check") {
+      sketch.type = "text";
+      (s.cues || []).forEach(c => { if (c.f && c.f.sketch === "x") c.f.sketch = ""; });
+    }
+    // flytta Skickad + Diegetisk till View One, precis före Comments
+    if ((s.tplVer || 1) < 2) {
+      [sent, dieg].filter(Boolean).forEach(c => { c.group = 1; s.columns.splice(s.columns.indexOf(c), 1); });
+      const ci = comments ? s.columns.indexOf(comments) : s.columns.length;
+      s.columns.splice(ci, 0, ...[sent, dieg].filter(Boolean));
+    }
+    // v3: QLab-nr, Längd, Fade in/ut + smalare fält
+    if ((s.tplVer || 1) < 3) {
+      ["version", "page"].forEach(id => { const c = col(id); if (c && c.type === "text") c.type = "short"; });
+      const after = (newCol, afterId) => {
+        if (col(newCol.id)) return;
+        const i = s.columns.findIndex(c => c.id === afterId);
+        const ci = s.columns.findIndex(c => c.id === "comments");
+        s.columns.splice(i >= 0 ? i + 1 : (ci >= 0 ? ci : s.columns.length), 0, newCol);
+      };
+      after({ id: "qlabno",  label: "QLab-nr", type: "short", group: 1, tech: true }, "qlab");
+      after({ id: "dur",     label: "Längd",   type: "short", group: 1 }, "musout");
+      after({ id: "fadein",  label: "Fade in", type: "sec",   group: 1 }, "dur");
+      after({ id: "fadeout", label: "Fade ut", type: "sec",   group: 1 }, "fadein");
+    }
+    // v5: Längd flyttas till View Two
+    if ((s.tplVer || 1) < 5) { const d = col("dur"); if (d && d.group === 1) d.group = 2; }
+    // v6: Assign → View Two, Stems + Stems i QLab i View Three
+    if ((s.tplVer || 1) < 6) {
+      const a = col("assign"); if (a && a.group === 3) a.group = 2;
+      if (!col("stems")) s.columns.push({ id: "stems", label: "Stems", type: "text", group: 3 });
+      if (!col("stemsok")) s.columns.push({ id: "stemsok", label: "Stems i QLab", type: "stemcheck", group: 3, ref: "stems", ver: "version", tech: true });
+    }
+  }
+  s.tplVer = TPL_VERSION;
+}
+
+function blankState(template) {
+  const t = TEMPLATES[template] || TEMPLATES.film;
+  return {
+    template: TEMPLATES[template] ? template : "film",
+    meta: { prod: "", ep: "", cut: "", datum: "", fps: "25", team: "" },
+    columns: JSON.parse(JSON.stringify(t.columns)),
+    cues: [],
+    recordings: [],
+    recSel: null,
+    recActive: false,
+    activeView: 1,
+    colVer: COL_VERSION,
+    tplVer: TPL_VERSION
+  };
+}
+
+let state = blankState("film");
+
+// Stabilt id per cue (behövs för kommentarer/teknikerfält i molnet)
+function newId() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 8); }
+function ensureCueIds() { state.cues.forEach(c => { if (!c.id) c.id = newId(); }); }
+
+function applyTemplateMeta() {
+  const m = tpl().meta;
+  document.querySelectorAll(".meta-grid [data-m]").forEach(div => {
+    const k = div.dataset.m;
+    const v = m[k];
+    div.style.display = v ? "" : "none";
+    const lab = document.getElementById("l-" + k);
+    if (lab && typeof v === "string") lab.textContent = v;
+  });
+  const badge = document.getElementById("tpl-badge");
+  if (badge) badge.textContent = "Mall: " + tpl().name;
+  const recBtn = document.querySelector('#view-bar button[data-v="rec"]');
+  if (recBtn) recBtn.style.display = tpl().recording ? "" : "none";
+}
+
+// --- Ny cue-sheet (mallväljare) ---
+let tplSel = "film", tplDown = false;
+function openTemplatePicker() {
+  tplSel = state.template || "film";
+  renderTemplateGrid();
+  const inCloud = !!(sb && cloud.user);
+  document.getElementById("tpl-name").value = "";
+  document.getElementById("tpl-name-wrap").style.display = inCloud ? "" : "none";
+  document.getElementById("tpl-hint").textContent = inCloud
+    ? "Produktionen skapas i molnet. Kolumnerna kan ändras i efterhand under Kolumner…"
+    : "Kolumnerna kan ändras i efterhand under Kolumner…";
+  document.getElementById("tpl-overlay").classList.add("open");
+  if (inCloud) setTimeout(() => document.getElementById("tpl-name").focus(), 30);
+}
+function closeTemplatePicker() { document.getElementById("tpl-overlay").classList.remove("open"); }
+function renderTemplateGrid() {
+  document.getElementById("tpl-grid").innerHTML = Object.entries(TEMPLATES).map(([k, t]) =>
+    `<button class="tpl-card ${k === tplSel ? "sel" : ""}" onclick="tplSel='${k}';renderTemplateGrid()">
+       <b>${esc(t.name)}</b><span>${esc(t.desc)}</span></button>`).join("");
+}
+function confirmTemplate() {
+  if (sb && cloud.user) { cloudCreateProject(tplSel); return; }
+  if (state.cues.length && !confirm(`Starta en ny tom cue-sheet (${TEMPLATES[tplSel].name})?\n\nNuvarande ark sparas i Historik.`)) return;
+  snapshot("före ny cue-sheet", true);
+  applyState(blankState(tplSel));
+  closeTemplatePicker();
+  toast(`Ny cue-sheet: ${TEMPLATES[tplSel].name}`);
+}
+
+// ---------- Tidkod ----------
+function fps() { return parseInt(state.meta.fps, 10); }
+
+function parseTC(str, fr) {
+  if (!str) return null;
+  fr = fr || fps();
+  const m = str.trim().match(/^(\d{1,2})[:;.](\d{1,2})[:;.](\d{1,2})[:;.](\d{1,2})$/);
+  if (!m) return null;
+  const [h, mi, s, f] = m.slice(1).map(Number);
+  if (mi > 59 || s > 59 || f >= fr) return null;
+  return ((h * 3600 + mi * 60 + s) * fr) + f;
+}
+
+function fmtTC(frames, fr) {
+  if (frames == null || frames < 0) return "";
+  fr = fr || fps();
+  const f = frames % fr;
+  let s = Math.floor(frames / fr);
+  const h = Math.floor(s / 3600); s %= 3600;
+  const mi = Math.floor(s / 60); s %= 60;
+  const p = n => String(n).padStart(2, "0");
+  return `${p(h)}:${p(mi)}:${p(s)}:${p(f)}`;
+}
+
+// ---------- Hjälp ----------
+function esc(s) { return (s || "").replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;"); }
+function teamNames() {
+  return (state.meta.team || "").split(",").map(s => s.trim()).filter(Boolean);
+}
+function statusClass(v) {
+  if (!v) return "";
+  const lo = v.toLowerCase();
+  if (lo === "approved" || lo === "ok") return "st-green";
+  if (lo.includes("struken") || lo === "cut" || lo.includes("struck")) return "st-red";
+  if (lo.includes("approved") || lo.includes("ok")) return "st-lightgreen";
+  return "";
+}
+function isCut(cue) { return statusClass((cue.f && cue.f.status) || "") === "st-red"; }
+
+// ---------- Roller ----------
+// role: "local" (ingen inloggning, allt tillåtet) | "admin" | "commenter" (Read & Comment)
+let role = "local";
+function isAdmin() { return role !== "commenter"; }
+function canEdit(col) { return isAdmin() || !!(col && col.tech); }
+function dis(col) { return canEdit(col) ? "" : "disabled"; }
+
+// ---------- Rendering ----------
+function visibleCols() {
+  const v = state.activeView || 1;
+  return state.columns.filter(c => (c.group || 0) === 0 || (c.group || 0) === v);
+}
+function setView(n) {
+  state.activeView = n;
+  state.recActive = false; // Recording-läget göms när man väljer en vy
+  render();
+}
+function renderViewBar() {
+  document.querySelectorAll("#view-bar button").forEach(b => {
+    if (b.dataset.v === "rec") b.classList.toggle("active", !!state.recActive);
+    else b.classList.toggle("active", !state.recActive && parseInt(b.dataset.v, 10) === (state.activeView || 1));
+  });
+}
+function render() {
+  renderViewBar();
+  const recOn = !!state.recActive;
+  document.getElementById("main-wrap").style.display = recOn ? "none" : "";
+  document.getElementById("rec-area").style.display = recOn ? "block" : "none";
+  if (recOn) {
+    document.getElementById("empty-msg").style.display = "none";
+    renderRecording();
+    renderTotals();
+    save();
+    return;
+  }
+  ensureCueIds();
+  applyTemplateMeta();
+  const cols = visibleCols();
+  const hr = document.getElementById("head-row");
+  hr.innerHTML = cols.map(c => `<th>${c.tech ? `<span class="tech-tag" title="Får ändras av ljudtekniker">tekniker</span><br>` : ""}${esc(c.label)}</th>`).join("") + "<th></th>";
+
+  const tb = document.getElementById("cue-body");
+  tb.innerHTML = "";
+  state.cues.forEach((cue, i) => {
+    const tr = document.createElement("tr");
+    if (isCut(cue)) tr.classList.add("row-cut");
+    if (state.columns.some(c => c.tint && getF(cue, c))) tr.classList.add("row-tint");
+    let cells = "";
+    cols.forEach(col => {
+      const v = getF(cue, col) || "";
+      const d = dis(col);
+      const tc = col.tech ? " tech-cell" : "";
+      if (col.type === "select" || col.type === "assign") {
+        const opts = col.type === "assign" ? teamNames() : (col.options || []);
+        cells += `<td class="col-sel${tc}" data-col="${col.id}"><select ${d} class="${statusClass(v)}" onchange="updF(${i},'${col.id}',this.value);${col.id === "status" ? "render()" : "this.className=statusClass(this.value)"}">
+          <option value=""></option>` +
+          opts.map(o => `<option value="${esc(o)}" ${v === o ? "selected" : ""}>${esc(o)}</option>`).join("") +
+          (v && !opts.includes(v) ? `<option value="${esc(v)}" selected>${esc(v)}</option>` : "") +
+          `</select></td>`;
+      } else if (col.type === "tc") {
+        cells += `<td class="${tc}"><input ${d} class="tc ${v && parseTC(v) == null ? "invalid" : ""}" value="${esc(v)}"
+          placeholder="00:00:00:00" size="11" oninput="updF(${i},'${col.id}',this.value)"
+          onblur="normTC(${i},'${col.id}',this)"></td>`;
+      } else if (col.type === "check") {
+        cells += `<td class="col-check${tc}"><input ${d} type="checkbox" ${v ? "checked" : ""}
+          onchange="updF(${i},'${col.id}',this.checked?'x':'')${col.tint ? ";this.closest('tr').classList.toggle('row-tint',this.checked)" : ""}"></td>`;
+      } else if (col.type === "vercheck") {
+        cells += `<td class="col-ver${tc}" data-ver="${col.id}">${verCellHtml(i, cue, col)}</td>`;
+      } else if (col.type === "stemcheck") {
+        cells += `<td class="col-stems${tc}" data-ver="${col.id}">${stemCellHtml(i, cue, col)}</td>`;
+      } else if (col.type === "no") {
+        cells += `<td class="col-no${tc}"><input ${d} value="${esc(v)}" oninput="updF(${i},'${col.id}',this.value)"></td>`;
+      } else if (col.type === "short") {
+        const rr = isVerRef(col.id) ? `;refreshVerCells(${i})` : "";
+        // fältet växer med innehållet (size = antal tecken) så t.ex. "2.4.1" alltid syns helt
+        cells += `<td class="col-short${tc}"><input ${d} value="${esc(v)}" size="${Math.max(2, v.length)}"
+          oninput="this.size=Math.max(2,this.value.length);updF(${i},'${col.id}',this.value)${rr}"></td>`;
+      } else if (col.type === "sec") {
+        cells += `<td class="col-sec${tc}"><input ${d} type="number" min="0" max="99" step="1" inputmode="numeric" value="${esc(v)}" placeholder="s"
+          oninput="if(this.value.length>2)this.value=this.value.slice(0,2);updF(${i},'${col.id}',this.value)"></td>`;
+      } else if (col.type === "date") {
+        cells += `<td class="col-date${tc}"><input ${d} type="date" value="${esc(v)}" onchange="updF(${i},'${col.id}',this.value)"></td>`;
+      } else if (col.type === "ts") {
+        cells += `<td class="col-ts"><span class="ts">${esc(fmtTsShort(v))}</span></td>`;
+      } else if (col.type === "dur") {
+        const auto = durAuto(cue);
+        cells += auto != null
+          ? `<td class="col-short" title="Räknas ut från TC och TC ut"><span class="ts" style="color:var(--text)">${esc(auto)}</span></td>`
+          : `<td class="col-short${tc}"><input ${d} value="${esc(v)}" placeholder="m:ss" size="${Math.max(4, v.length + 1)}"
+              oninput="this.size=Math.max(4,this.value.length+1);updF(${i},'${col.id}',this.value)"></td>`;
+      } else if (col.type === "comment") {
+        const cm = ensureCm(cue);
+        cells += `<td class="col-comment">${cmButton(i, cm)}</td>`;
+      } else if (col.id === "filename") {
+        cells += `<td class="col-text${tc}" data-col="${col.id}"><input ${d} value="${esc(v)}" placeholder="skriv eller släpp fil här"
+          onmouseenter="showTip(this)" onmouseleave="hideTip()" onfocus="hideTip()"
+          oninput="updF(${i},'${col.id}',this.value)"
+          ondragover="event.preventDefault();this.classList.add('drop-hover')"
+          ondragleave="this.classList.remove('drop-hover')"
+          ondrop="dropFileName(event,${i},'${col.id}')"></td>`;
+      } else {
+        // kolumner som ett versionskryss jämför mot uppdaterar kryss-cellen live
+        const rr = isVerRef(col.id) ? `;refreshVerCells(${i})` : "";
+        const ph = col.id === "stems" ? ` placeholder="BG, Violin, Vokal"` : "";
+        cells += `<td class="col-text${tc}" data-col="${col.id}"><input ${d} value="${esc(v)}"${ph}
+          onmouseenter="showTip(this)" onmouseleave="hideTip()" onfocus="hideTip()"
+          oninput="updF(${i},'${col.id}',this.value)${rr}"></td>`;
+      }
+    });
+    cells += isAdmin() ? `
+      <td class="act">
+        <button class="icon" title="Flytta upp" onclick="move(${i},-1)">↑</button>
+        <button class="icon" title="Flytta ner" onclick="move(${i},1)">↓</button>
+        <button class="icon" title="Duplicera" onclick="dup(${i})">⧉</button>
+        <button class="icon del" title="Ta bort" onclick="del(${i})">✕</button>
+      </td>` : `<td class="act"></td>`;
+    tr.innerHTML = cells;
+    tb.appendChild(tr);
+  });
+  document.getElementById("empty-msg").style.display = state.cues.length ? "none" : "block";
+  renderTotals();
+  save();
+}
+
+function countOk(colId, words) {
+  return state.cues.filter(c => {
+    const v = ((c.f && c.f[colId]) || "").toLowerCase();
+    return v && words.some(w => v.includes(w));
+  }).length;
+}
+
+function renderTotals() {
+  const n = state.cues.length;
+  const appr = countOk("status", ["approved"]);
+  const ok = countOk("compstat", ["ok"]);
+  const bounced = state.cues.filter(c => c.f && c.f.bounced).length;
+  const vc = state.columns.find(c => c.type === "vercheck");
+  let extra = "";
+  if (vc) {
+    const refCol = state.columns.find(c => c.id === vc.ref) || { id: vc.ref };
+    const withVer = state.cues.filter(c => !isCut(c) && (getF(c, refCol) || "").trim());
+    const loaded = withVer.filter(c => (getF(c, vc) || "").trim() === (getF(c, refCol) || "").trim()).length;
+    extra = ` · <b>${loaded}/${withVer.length}</b> ${esc(vc.label.toLowerCase())}`;
+  }
+  const cut = state.cues.filter(isCut).length;
+  document.getElementById("totals").innerHTML = state.template === "teater"
+    ? `<b>${n}</b> cuer · <b>${appr}</b> approved${extra}${cut ? ` · <b>${cut}</b> strukna` : ""}`
+    : `<b>${n}</b> cuer · <b>${appr}</b> approved · <b>${ok}</b> composer OK · <b>${bounced}</b> bounced`;
+}
+
+// ---------- Cue-actions ----------
+function nextNo() {
+  // hitta högsta inledande heltal bland No.-värden och föreslå +1
+  let max = 0;
+  state.cues.forEach(c => {
+    const m = ((c.f && c.f.no) || "").match(/^(\d+)/);
+    if (m) max = Math.max(max, parseInt(m[1], 10));
+  });
+  return String(max + 1);
+}
+function addCue() {
+  const f = {};
+  if (state.columns.some(c => c.id === "no")) f.no = nextNo();
+  if (state.columns.some(c => c.id === "filmcut")) f.filmcut = state.meta.cut || "";
+  state.cues.push({ id: newId(), f });
+  render();
+  const rows = document.querySelectorAll("#cue-body tr");
+  rows[rows.length - 1]?.querySelectorAll("input")[1]?.focus();
+}
+function dropFileName(e, i, colId) {
+  e.preventDefault();
+  e.target.classList.remove("drop-hover");
+  const file = e.dataTransfer.files && e.dataTransfer.files[0];
+  if (!file) return;
+  const name = file.name.replace(/\.[^.]+$/, ""); // ta bort filändelsen
+  e.target.value = name;
+  updF(i, colId, name);
+  toast(`Filnamn: ${name}`);
+}
+// förhindra att webbläsaren öppnar filen om man missar fältet
+document.addEventListener("dragover", e => e.preventDefault());
+document.addEventListener("drop", e => e.preventDefault());
+
+// Teknikerfält lagras separat i molnet (så att adminens sparning aldrig skriver över dem)
+let techVals = {}; // { cueId: { colId: value } }
+function getF(cue, col) {
+  if (!col) return "";
+  if (col.tech && cloudActive()) return ((techVals[cue.id] || {})[col.id]) || "";
+  return (cue.f && cue.f[col.id]) || "";
+}
+function updF(i, colId, v) {
+  const cue = state.cues[i];
+  const col = state.columns.find(c => c.id === colId);
+  if (col && col.tech && cloudActive()) {
+    if (!cue.id) cue.id = newId();
+    (techVals[cue.id] = techVals[cue.id] || {})[colId] = v;
+    cloudSetTech(cue.id, colId, v);
+    renderTotals();
+    return;
+  }
+  if (!canEdit(col)) return;
+  if (!cue.f) cue.f = {};
+  if (cue.f[colId] === v) return;
+  cue.f[colId] = v;
+  if (col && col.type !== "ts") touchTs(cue);
+  renderTotals(); save();
+}
+
+// ---------- Kommentarer ----------
+// cue.cm = { status: "" | "open" | "answered", thread: [{ k: "comment"|"answer"|"note", t, ts, by }] }
+// "by" är tomt lokalt – fylls i när inloggning (Supabase) finns.
+const CM_ICON = {
+  none: `<svg viewBox="0 0 24 24"><path d="M13 24c-3.26 0-6.19-1.99-7.4-5.02l-3.03-7.61a1 1 0 0 1 1.24-1.32l.79.26c.56.19 1.02.61 1.24 1.16L7.25 15H8V3.25a1.25 1.25 0 0 1 2.5 0V12h1V1.25a1.25 1.25 0 0 1 2.5 0V12h1V2.75a1.25 1.25 0 0 1 2.5 0V12h1V5.75a1.25 1.25 0 0 1 2.5 0V16c0 4.42-3.58 8-8 8z"/></svg>`,
+  open: `?`,
+  answered: `<svg viewBox="0 0 24 24"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>`
+};
+const CM_TITLE = { none: "Lägg till kommentar", open: "Obesvarad kommentar", answered: "Besvarad" };
+const CM_KIND = { comment: "Comment", answer: "Answered", note: "Note" };
+
+function ensureCm(cue) {
+  if (!cue.cm) cue.cm = { status: "", thread: [] };
+  if (!Array.isArray(cue.cm.thread)) cue.cm.thread = [];
+  // migrera gammal fritext i f.comments (auto-detekt, import, äldre projekt) till tråden
+  if (cue.f && typeof cue.f.comments === "string" && cue.f.comments.trim()) {
+    if (cloudActive()) {
+      if (isAdmin()) { const t = cue.f.comments.trim(); delete cue.f.comments; cloudAddComment(cue.id, "note", t); }
+    } else {
+      cue.cm.thread.push({ k: "note", t: cue.f.comments.trim(), ts: new Date().toISOString(), by: "" });
+      delete cue.f.comments;
+    }
+  }
+  return cue.cm;
+}
+function cmState(cm) { return cm.status === "open" ? "open" : cm.status === "answered" ? "answered" : "none"; }
+function cmButton(i, cm) {
+  const s = cmState(cm);
+  const n = cm.thread.length;
+  return `<button class="cbtn c-${s}" title="${CM_TITLE[s]}${n ? ` (${n})` : ""}" onclick="openComment(${i})">${CM_ICON[s]}</button>`;
+}
+function cmText(cm) {
+  // textversion för export
+  return (cm && cm.thread || []).map(e => `[${CM_KIND[e.k] || e.k}] ${e.t}`).join("\n");
+}
+
+let cmIdx = null;
+let cmDown = false; // musnedtryck skedde på bakgrunden (så att textmarkering inte stänger rutan)
+function openComment(i) {
+  cmIdx = i;
+  const cue = state.cues[i];
+  const f = cue.f || {};
+  document.getElementById("cm-title").textContent =
+    `Cue ${f.no || "–"}${f.titel ? " · " + f.titel : ""}`;
+  document.getElementById("cm-text").value = "";
+  renderCmThread();
+  document.getElementById("cm-overlay").classList.add("open");
+  setTimeout(() => document.getElementById("cm-text").focus(), 30);
+}
+function closeComment() {
+  document.getElementById("cm-overlay").classList.remove("open");
+  cmIdx = null;
+}
+function fmtTs(iso) {
+  const d = new Date(iso);
+  if (isNaN(d)) return "";
+  const p = n => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+function renderCmThread() {
+  if (cmIdx == null) return;
+  const cm = ensureCm(state.cues[cmIdx]);
+  const s = cmState(cm);
+  document.getElementById("cm-sub").textContent =
+    s === "open" ? "Väntar på svar" : s === "answered" ? "Besvarad" : "";
+  const el = document.getElementById("cm-thread");
+  if (!cm.thread.length) { el.innerHTML = `<div class="cm-empty">Inga kommentarer ännu.</div>`; return; }
+  el.innerHTML = cm.thread.map((e, j) => `
+    <div class="cm-item">
+      <span class="cm-badge k-${esc(e.k)}">${CM_KIND[e.k] || esc(e.k)}</span>
+      <div style="flex:1">
+        <div class="cm-text">${esc(e.t)}</div>
+        <div class="cm-ts">${fmtTs(e.ts)}${e.by ? " · " + esc(e.by) : ""}</div>
+      </div>
+      <button class="icon del" title="Ta bort inlägg" onclick="cmDelete(${j})">✕</button>
+    </div>`).join("");
+  el.scrollTop = el.scrollHeight;
+}
+function cmPush(kind, text) {
+  const cm = ensureCm(state.cues[cmIdx]);
+  cm.thread.push({ k: kind, t: text, ts: new Date().toISOString(), by: "" });
+}
+function cmComment() {
+  if (cmIdx == null) return;
+  const ta = document.getElementById("cm-text");
+  const text = ta.value.trim();
+  if (!text) { toast("Skriv en kommentar först"); ta.focus(); return; }
+  if (cloudActive()) { cloudAddComment(state.cues[cmIdx].id, "comment", text); ta.value = ""; return; }
+  cmPush("comment", text);
+  ensureCm(state.cues[cmIdx]).status = "open";
+  ta.value = "";
+  renderCmThread(); render();
+}
+function cmAnswered() {
+  if (cmIdx == null) return;
+  const ta = document.getElementById("cm-text");
+  const text = ta.value.trim();
+  if (cloudActive()) { cloudAddComment(state.cues[cmIdx].id, "answer", text); ta.value = ""; return; }
+  if (text) cmPush("answer", text);
+  ensureCm(state.cues[cmIdx]).status = "answered";
+  ta.value = "";
+  renderCmThread(); render();
+}
+function cmReset() {
+  if (cmIdx == null) return;
+  const cm = ensureCm(state.cues[cmIdx]);
+  if (cm.thread.length && !confirm("Ta bort hela tråden och återställ knappen?")) return;
+  if (cloudActive()) { cloudResetComments(state.cues[cmIdx].id); closeComment(); return; }
+  cm.thread = []; cm.status = "";
+  render();
+  closeComment();
+}
+function cmDelete(j) {
+  if (cmIdx == null) return;
+  const cm = ensureCm(state.cues[cmIdx]);
+  if (cloudActive()) { const e = cm.thread[j]; if (e && e.rid) cloudDeleteComment(e.rid); return; }
+  cm.thread.splice(j, 1);
+  if (!cm.thread.length) cm.status = "";
+  renderCmThread(); render();
+}
+// Molnläge: tråden byggs från comments-tabellen; status härleds från senaste comment/answer
+function cmFromRows(rows) {
+  const thread = rows.map(r => ({ rid: r.id, k: r.kind, t: r.text || "", ts: r.created_at, by: r.author_name || "" }));
+  let status = "";
+  for (const e of thread) { if (e.k === "comment") status = "open"; else if (e.k === "answer") status = "answered"; }
+  return { status, thread };
+}
+document.addEventListener("keydown", e => {
+  if (e.key === "Escape" && document.getElementById("cm-overlay").classList.contains("open")) closeComment();
+});
+function normTC(i, colId, el) {
+  let v = el.value.trim();
+  if (/^\d+$/.test(v) && v.length <= 8) {
+    if (v.length <= 6) v = v.padStart(6, "0") + "00"; // HHMMSS → frames = 00
+    v = v.padStart(8, "0").replace(/(\d{2})(?=\d)/g, "$1:");
+  }
+  const f = parseTC(v);
+  if (f != null) state.cues[i].f[colId] = fmtTC(f);
+  render();
+}
+function del(i) {
+  const deletedNo = (state.cues[i].f && state.cues[i].f.no) || "";
+  state.cues.splice(i, 1);
+  // Räkna ner rena heltal endast om det som togs bort var ett rent heltal
+  if (/^\d+$/.test(deletedNo)) {
+    state.cues.slice(i).forEach(cue => {
+      const v = (cue.f && cue.f.no) || "";
+      if (/^\d+$/.test(v)) {
+        const n = parseInt(v, 10);
+        if (n > 0) cue.f.no = String(n - 1);
+      }
+    });
+  }
+  // Ta bort bokstavssuffix om bara en rad finns kvar med samma basnummer (t.ex. "5b" → "5")
+  const baseCount = {};
+  state.cues.forEach(cue => {
+    const m = ((cue.f && cue.f.no) || "").match(/^(\d+)[a-zA-Z]+$/);
+    if (m) baseCount[m[1]] = (baseCount[m[1]] || 0) + 1;
+  });
+  state.cues.forEach(cue => {
+    const m = ((cue.f && cue.f.no) || "").match(/^(\d+)[a-zA-Z]+$/);
+    if (m && baseCount[m[1]] === 1) cue.f.no = m[1];
+  });
+  render();
+}
+function clearCues() {
+  if (!state.cues.length) { toast("Inga cuer att rensa"); return; }
+  if (!confirm(`Är du säker? Detta tar bort alla ${state.cues.length} cuer.\n\n(Ett snapshot sparas i Historik så det går att ångra.)`)) return;
+  snapshot("före rensning av cuer", true);
+  state.cues = [];
+  render();
+  toast("Alla cuer rensade");
+}
+function dup(i) {
+  const copy = JSON.parse(JSON.stringify(state.cues[i]));
+  copy.id = newId();
+  copy.cm = { status: "", thread: [] }; // kopian startar utan kommentarstråd
+  state.cues.splice(i + 1, 0, copy);
+  render();
+}
+function move(i, d) {
+  const j = i + d;
+  if (j < 0 || j >= state.cues.length) return;
+  [state.cues[i], state.cues[j]] = [state.cues[j], state.cues[i]];
+  render();
+}
+
+// ---------- Recording: Rec List + Rec Notes ----------
+let recNewOpen = false;
+
+function defaultRecCols() {
+  return [
+    { id: "no",       label: "No.",          type: "text" },
+    { id: "title",    label: "Cue Title",    type: "text" },
+    { id: "prep",     label: "Prepared",     type: "check" },
+    { id: "recdur",   label: "Rec Dur Str",  type: "text" },
+    { id: "recorded", label: "Recorded STR", type: "text" },
+    { id: "i1",       label: "Str A",        type: "text", ren: 1 },
+    { id: "i2",       label: "Str A OVD",    type: "text", ren: 1 },
+    { id: "i3",       label: "Str B",        type: "text", ren: 1 },
+    { id: "i4",       label: "Str B OVD",    type: "text", ren: 1 },
+    { id: "comments", label: "Comments",     type: "text" },
+  ];
+}
+
+function toggleRecording() {
+  state.recActive = !state.recActive;
+  if (state.recActive && state.recordings.length && !curRec()) {
+    state.recSel = { id: state.recordings[0].id, view: "list" };
+  }
+  render();
+}
+function curRec() { return state.recordings.find(r => r.id === (state.recSel && state.recSel.id)); }
+function selRec(id, view) { state.recSel = { id, view }; recNewOpen = false; render(); }
+function fmtRecDate(d) {
+  if (!d) return "?";
+  const p = d.split("-");
+  return `${parseInt(p[2], 10)}/${parseInt(p[1], 10)}`;
+}
+
+function createRecording() {
+  const v = document.getElementById("rec-new-date").value;
+  if (!v) { toast("Välj ett datum för inspelningen"); return; }
+  snapshot("före ny inspelning", true);
+  const rec = { id: "r" + Date.now().toString(36), date: v, cols: defaultRecCols(), rows: [], notes: [] };
+  state.recordings.push(rec);
+  state.recSel = { id: rec.id, view: "list" };
+  recNewOpen = false;
+  render();
+}
+
+function deleteRecording() {
+  const rec = curRec();
+  if (!rec) return;
+  if (!confirm(`Ta bort inspelningen ${fmtRecDate(rec.date)} med ${rec.rows.length} rader och ${rec.notes.length} anteckningar? (Snapshot sparas i Historik.)`)) return;
+  snapshot("före borttagning av inspelning", true);
+  state.recordings = state.recordings.filter(r => r.id !== rec.id);
+  state.recSel = state.recordings.length ? { id: state.recordings[0].id, view: "list" } : null;
+  render();
+}
+
+function renderRecording() {
+  const area = document.getElementById("rec-area");
+  const rec = curRec();
+  let html = `<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:14px">
+    <button title="New recording" onclick="recNewOpen=true;renderRecording()">+</button>`;
+  state.recordings.forEach(r => {
+    const actL = rec && r.id === rec.id && state.recSel.view === "list";
+    const actN = rec && r.id === rec.id && state.recSel.view === "notes";
+    html += `<button class="${actL ? "primary" : ""}" onclick="selRec('${r.id}','list')">Rec List ${fmtRecDate(r.date)}</button>
+      <button class="${actN ? "primary" : ""}" onclick="selRec('${r.id}','notes')">Rec Notes ${fmtRecDate(r.date)}</button>`;
+  });
+  html += `</div>`;
+
+  if (recNewOpen || !state.recordings.length) {
+    html += `<div style="display:flex;gap:8px;align-items:flex-end;margin-bottom:14px">
+      <div><label>New recording — datum för inspelningen</label><input type="date" id="rec-new-date" style="width:auto"></div>
+      <button class="primary" onclick="createRecording()">Skapa</button>
+      ${state.recordings.length ? `<button onclick="recNewOpen=false;renderRecording()">Avbryt</button>` : ""}
+    </div>`;
+  }
+
+  if (rec && !recNewOpen) {
+    html += `<div style="display:flex;gap:8px;align-items:flex-end;margin-bottom:14px">
+      <div><label>Inspelningsdatum (kan ändras)</label>
+        <input type="date" style="width:auto" value="${rec.date}" onchange="curRec().date=this.value;save();render()"></div>
+      <span style="flex:1"></span>
+      <button class="danger" onclick="deleteRecording()">Ta bort inspelning</button>
+    </div>`;
+    html += state.recSel.view === "list" ? recListHtml(rec) : recNotesHtml(rec);
+  }
+  area.innerHTML = html;
+}
+
+// --- Rec List ---
+function parseDurS(s) {
+  s = (s || "").trim();
+  if (!s) return 0;
+  const p = s.split(":").map(Number);
+  if (p.some(isNaN)) return 0;
+  if (p.length === 3) return p[0] * 3600 + p[1] * 60 + p[2];
+  if (p.length === 2) return p[0] * 60 + p[1];
+  return p[0] * 60;
+}
+function fmtHMS(t) {
+  const h = Math.floor(t / 3600), m = Math.floor((t % 3600) / 60), s = Math.round(t % 60);
+  return `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+}
+
+function recListHtml(rec) {
+  let h = `<div class="table-wrap"><table><thead><tr>`;
+  rec.cols.forEach((c, ci) => {
+    h += `<th>${c.ren
+      ? `<input value="${esc(c.label)}" style="min-width:80px" title="Instrumentkolumn — byt namn fritt" oninput="curRec().cols[${ci}].label=this.value;save()">`
+      : esc(c.label)}</th>`;
+  });
+  h += `<th></th></tr></thead><tbody>`;
+  rec.rows.forEach((row, i) => {
+    h += `<tr>`;
+    rec.cols.forEach(c => {
+      const v = (row.f && row.f[c.id]) || "";
+      if (c.id === "no") {
+        h += `<td class="num">${i + 1}</td>`;
+      } else if (c.type === "check") {
+        h += `<td class="col-check"><input type="checkbox" ${v ? "checked" : ""}
+          onchange="updRecRow(${i},'${c.id}',this.checked?'x':'');renderRecording()"></td>`;
+      } else {
+        h += `<td><input value="${esc(v)}" oninput="updRecRow(${i},'${c.id}',this.value)" onchange="renderRecording()"></td>`;
+      }
+    });
+    h += `<td class="act">
+      <button class="icon" onclick="moveRecRow(${i},-1)">↑</button>
+      <button class="icon" onclick="moveRecRow(${i},1)">↓</button>
+      <button class="icon del" onclick="delRecRow(${i})">✕</button></td></tr>`;
+  });
+  h += `</tbody></table></div>`;
+  const n = rec.rows.length;
+  const prep = rec.rows.filter(r => r.f && r.f.prep).length;
+  const sum = id => fmtHMS(rec.rows.reduce((a, r) => a + parseDurS((r.f && r.f[id]) || ""), 0));
+  h += `<div class="totals" style="text-align:left;margin-top:10px">
+    COUNT: <b>${n}</b> · Prepared: <b>${prep}</b> · Rec Dur: <b>${sum("recdur")}</b> · Recorded: <b>${sum("recorded")}</b></div>`;
+  h += `<div style="display:flex;gap:8px;margin-top:12px">
+    <button class="primary" onclick="addRecRow()">+ Lägg till rad</button>
+    <button onclick="addRecCol()">+ Ny instrumentkolumn</button></div>`;
+  return h;
+}
+function addRecRow() { curRec().rows.push({ f: {} }); save(); renderRecording(); }
+function updRecRow(i, colId, v) {
+  const rec = curRec();
+  if (!rec.rows[i].f) rec.rows[i].f = {};
+  rec.rows[i].f[colId] = v;
+  save();
+}
+function delRecRow(i) { curRec().rows.splice(i, 1); save(); renderRecording(); }
+function moveRecRow(i, d) {
+  const rows = curRec().rows, j = i + d;
+  if (j < 0 || j >= rows.length) return;
+  [rows[i], rows[j]] = [rows[j], rows[i]];
+  save(); renderRecording();
+}
+function addRecCol() {
+  const rec = curRec();
+  const id = "c" + Date.now().toString(36);
+  const ci = rec.cols.findIndex(c => c.id === "comments");
+  rec.cols.splice(ci < 0 ? rec.cols.length : ci, 0, { id, label: "Nytt instrument", type: "text", ren: 1 });
+  save(); renderRecording();
+}
+
+// --- Rec Notes ---
+function recNotesHtml(rec) {
+  let h = `<div style="display:flex;gap:8px;margin-bottom:12px">
+    <button onclick="addNote('session')">+ Session-rubrik</button>
+    <button onclick="addNote('cue')">+ Cue-rubrik</button>
+    <button class="primary" onclick="addNote('take')">+ Take</button></div>`;
+  h += `<div class="table-wrap"><table><thead><tr>
+    <th>Take No.</th><th>Start Bar</th><th>End Bar</th><th>Rec. Layer</th><th>Use Take</th>
+    <th>Edit Comments</th><th>Composer Comments</th><th></th></tr></thead><tbody>`;
+  rec.notes.forEach((nt, i) => {
+    const acts = `<td class="act">
+      <button class="icon" onclick="moveNote(${i},-1)">↑</button>
+      <button class="icon" onclick="moveNote(${i},1)">↓</button>
+      <button class="icon del" onclick="delNote(${i})">✕</button></td>`;
+    if (nt.kind === "session") {
+      h += `<tr><td colspan="7" class="rec-session"><input value="${esc(nt.text)}"
+        placeholder="<<<< SESSION 1 (STRINGS) >>>>" oninput="updNoteText(${i},this.value)"></td>${acts}</tr>`;
+    } else if (nt.kind === "cue") {
+      h += `<tr><td colspan="7" class="rec-cuehead"><input value="${esc(nt.text)}"
+        placeholder="WAL3m01 Start" oninput="updNoteText(${i},this.value)"></td>${acts}</tr>`;
+    } else {
+      const f = nt.f || {};
+      h += `<tr>
+        <td class="col-no"><input value="${esc(f.takeno)}" oninput="updNote(${i},'takeno',this.value)"></td>
+        <td style="min-width:60px"><input value="${esc(f.startbar)}" placeholder="<" oninput="updNote(${i},'startbar',this.value)"></td>
+        <td style="min-width:60px"><input value="${esc(f.endbar)}" placeholder=">" oninput="updNote(${i},'endbar',this.value)"></td>
+        <td><input value="${esc(f.layer)}" placeholder="Main" oninput="updNote(${i},'layer',this.value)"></td>
+        <td class="col-check"><input type="checkbox" ${f.use ? "checked" : ""} onchange="updNote(${i},'use',this.checked?'x':'')"></td>
+        <td style="min-width:200px"><input value="${esc(f.editc)}" oninput="updNote(${i},'editc',this.value)"></td>
+        <td style="min-width:200px"><input value="${esc(f.compc)}" oninput="updNote(${i},'compc',this.value)"></td>${acts}</tr>`;
+    }
+  });
+  h += `</tbody></table></div>`;
+  return h;
+}
+function addNote(kind) {
+  const rec = curRec();
+  if (kind === "take") {
+    // fortsätt från föregående takes nummer (även om användaren börjat om manuellt);
+    // ny cue-/session-rubrik nollställer till 1
+    let n = 1;
+    const last = rec.notes[rec.notes.length - 1];
+    if (last && last.kind === "take") {
+      const m = ((last.f && last.f.takeno) || "").match(/(\d+)\s*$/);
+      if (m) n = parseInt(m[1], 10) + 1;
+    }
+    rec.notes.push({ kind: "take", f: { takeno: String(n), startbar: "<", endbar: ">", layer: "", use: "", editc: "", compc: "" } });
+  } else {
+    rec.notes.push({ kind, text: "" });
+  }
+  save(); renderRecording();
+}
+function updNote(i, k, v) {
+  const nt = curRec().notes[i];
+  if (!nt.f) nt.f = {};
+  nt.f[k] = v;
+  save();
+}
+function updNoteText(i, v) { curRec().notes[i].text = v; save(); }
+function delNote(i) { curRec().notes.splice(i, 1); save(); renderRecording(); }
+function moveNote(i, d) {
+  const notes = curRec().notes, j = i + d;
+  if (j < 0 || j >= notes.length) return;
+  [notes[i], notes[j]] = [notes[j], notes[i]];
+  save(); renderRecording();
+}
+
+// ---------- Panelväxling: bara en öppen åt gången ----------
+function closeOtherPanels(keepId) {
+  ["col-panel", "detect-panel", "hist-panel", "arch-panel"].forEach(id => {
+    if (id !== keepId) document.getElementById(id).classList.remove("open");
+  });
+}
+
+// ---------- Kolumnhanterare ----------
+function toggleCols() {
+  const p = document.getElementById("col-panel");
+  p.classList.toggle("open");
+  if (p.classList.contains("open")) { closeOtherPanels("col-panel"); renderCols(); }
+}
+const TYPE_LABEL = { text: "text", short: "kort text", sec: "sekunder", date: "datum", ts: "auto-tid", dur: "längd", select: "dropdown", tc: "tidkod", no: "cue-nr", assign: "assign", check: "kryssbox", comment: "kommentar", vercheck: "versionskryss", stemcheck: "stem-kryss" };
+function setColTech(i, on) { state.columns[i].tech = !!on; render(); }
+function isVerRef(colId) {
+  return state.columns.some(c => (c.type === "vercheck" && c.ref === colId) ||
+                                 (c.type === "stemcheck" && (c.ref === colId || c.ver === colId)));
+}
+// ---- Stems med avbockning per stem ----
+// Lagrat värde (teknikerfält): "<version>::<Namn1>,<Namn2>" = vilka stems som bockats, och mot vilken version
+function stemNames(cue, col) {
+  const refCol = state.columns.find(c => c.id === col.ref);
+  return (getF(cue, refCol) || "").split(",").map(s => s.trim()).filter(Boolean);
+}
+function stemState(cue, col) {
+  const names = stemNames(cue, col);
+  const verCol = col.ver ? state.columns.find(c => c.id === col.ver) : null;
+  const cur = verCol ? (getF(cue, verCol) || "").trim() : "";
+  const raw = getF(cue, col) || "";
+  const sep = raw.indexOf("::");
+  const storedVer = sep >= 0 ? raw.slice(0, sep) : "";
+  const stale = !!verCol && storedVer !== cur; // bockat mot en äldre version → räknas som ej inladdat
+  const ticked = stale ? [] : (sep >= 0 ? raw.slice(sep + 2) : raw).split(",").map(s => s.trim()).filter(Boolean);
+  return { names, cur, storedVer, stale, ticked: ticked.filter(t => names.includes(t)) };
+}
+function stemCellHtml(i, cue, col) {
+  const st = stemState(cue, col);
+  if (!st.names.length) return `<span class="ver-note">inga stems</span>`;
+  const chips = st.names.map(n => {
+    const on = st.ticked.includes(n);
+    return `<label class="stem ${on ? "on" : ""}"><input ${dis(col)} type="checkbox" ${on ? "checked" : ""}
+      onchange="stemToggle(${i},'${col.id}',${JSON.stringify(n).replace(/"/g, "&quot;")},this.checked)">${esc(n)}</label>`;
+  }).join("");
+  const all = st.ticked.length === st.names.length;
+  const note = st.stale && st.storedVer
+    ? `<span class="ver-note stale">bockat mot ${esc(st.storedVer)} · ny: ${esc(st.cur || "–")}</span>`
+    : `<span class="ver-note ${all ? "ok" : ""}">${st.ticked.length}/${st.names.length}${all ? " ✓" : ""}</span>`;
+  return `<div class="stems">${chips}</div>${note}`;
+}
+function stemToggle(i, colId, name, on) {
+  const col = state.columns.find(c => c.id === colId);
+  const st = stemState(state.cues[i], col);
+  const set = new Set(st.ticked);
+  if (on) set.add(name); else set.delete(name);
+  updF(i, colId, `${st.cur}::${[...set].join(",")}`);
+  refreshVerCells(i);
+}
+function stemExportText(cue, col) {
+  const st = stemState(cue, col);
+  if (!st.names.length) return "";
+  return st.names.map(n => `${st.ticked.includes(n) ? "☑" : "☐"} ${n}`).join("  ") + (st.stale && st.storedVer ? ` (bockat mot ${st.storedVer})` : "");
+}
+function fmtTsShort(iso) {
+  if (!iso) return "";
+  const d = new Date(iso); if (isNaN(d)) return "";
+  const p = n => String(n).padStart(2, "0");
+  return `${d.getDate()}/${d.getMonth() + 1} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+// Längd från TC in (kolumn "tc") och TC ut (kolumn "tcout") om båda finns och går att tolka
+function durAuto(cue) {
+  if (!state.columns.some(c => c.id === "tcout")) return null;
+  const a = parseTC((cue.f && cue.f.tc) || ""), b = parseTC((cue.f && cue.f.tcout) || "");
+  if (a == null || b == null || b < a) return null;
+  const s = Math.round((b - a) / fps());
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+}
+// Textvärde för export (Excel/PDF)
+function exportVal(cue, col) {
+  if (col.type === "ts") return fmtTsShort(getF(cue, col));
+  if (col.type === "stemcheck") return stemExportText(cue, col);
+  if (col.type === "dur") { const a = durAuto(cue); return a != null ? a : (getF(cue, col) || ""); }
+  return getF(cue, col) || "";
+}
+function touchTs(cue) {
+  state.columns.filter(c => c.type === "ts").forEach(c => { if (!cue.f) cue.f = {}; cue.f[c.id] = new Date().toISOString(); });
+}
+function verCellHtml(i, cue, col) {
+  const refCol = state.columns.find(c => c.id === col.ref) || { id: col.ref };
+  const cur = (getF(cue, refCol) || "").trim();
+  const got = (getF(cue, col) || "").trim();
+  const ok = !!cur && got === cur;
+  let note = "";
+  if (got && !ok) note = `<span class="ver-note stale">${esc(got)} inladdad · ny: ${esc(cur || "–")}</span>`;
+  else if (ok) note = `<span class="ver-note ok">${esc(cur)} ✓</span>`;
+  else if (!cur) note = `<span class="ver-note">ingen version</span>`;
+  return `<input ${dis(col)} type="checkbox" ${ok ? "checked" : ""} ${!cur ? "disabled" : ""}
+    title="${cur ? `Bocka i när version ${esc(cur)} är inladdad` : "Fyll i Version först"}"
+    onchange="verToggle(${i},'${col.id}',this.checked)">${note}`;
+}
+function refreshVerCells(i) {
+  const tr = document.querySelectorAll("#cue-body tr")[i];
+  if (!tr) return;
+  tr.querySelectorAll("td[data-ver]").forEach(td => {
+    const col = state.columns.find(c => c.id === td.dataset.ver);
+    if (!col) return;
+    td.innerHTML = col.type === "stemcheck" ? stemCellHtml(i, state.cues[i], col) : verCellHtml(i, state.cues[i], col);
+  });
+  renderTotals();
+}
+function verToggle(i, colId, checked) {
+  const col = state.columns.find(c => c.id === colId);
+  const refCol = state.columns.find(c => c.id === (col && col.ref));
+  const cur = (getF(state.cues[i], refCol) || "").trim();
+  updF(i, colId, checked && cur ? cur : "");
+  refreshVerCells(i);
+}
+function renderCols() {
+  const list = document.getElementById("col-list");
+  list.innerHTML = "";
+  const ps = document.getElementById("preset-sel");
+  if (ps) {
+    const av = presetsAvailable();
+    ps.innerHTML = `<option value="">+ Förslag… (${av.length})</option>` +
+      av.map(p => `<option value="${p.id}">${esc(p.label)} – ${TYPE_LABEL[p.type] || p.type}${p.hint ? " · " + esc(p.hint) : ""}</option>`).join("");
+    ps.style.display = av.length ? "" : "none";
+  }
+  state.columns.forEach((col, i) => {
+    const row = document.createElement("div");
+    row.className = "col-row";
+    row.innerHTML = `
+      <button class="icon" title="Flytta upp" onclick="moveCol(${i},-1)">↑</button>
+      <button class="icon" title="Flytta ner" onclick="moveCol(${i},1)">↓</button>
+      <input type="text" value="${esc(col.label)}" oninput="renameCol(${i},this.value)" placeholder="Kolumnnamn">
+      <span class="col-type">${TYPE_LABEL[col.type] || col.type}</span>
+      <select style="width:auto" onchange="setColGroup(${i},this.value)">${
+        GROUP_NAMES.map((g, gi) =>
+          `<option value="${gi}" ${(col.group || 0) === gi ? "selected" : ""}>${g}</option>`).join("")
+      }</select>
+      ${col.type === "select"
+        ? `<input type="text" class="opts" value="${esc((col.options || []).join(", "))}"
+             oninput="setColOptions(${i},this.value)" placeholder="Val 1, Val 2, Val 3 …">`
+        : ""}
+      ${col.type === "vercheck" || col.type === "stemcheck"
+        ? `<select style="width:auto" title="${col.type === "stemcheck" ? "Kolumn med stem-namnen (kommaseparerade)" : "Versionskolumn som krysset jämförs mot"}" onchange="state.columns[${i}].ref=this.value;render()">${
+            state.columns.filter(c => c.type === "text" || c.type === "short").map(c =>
+              `<option value="${c.id}" ${col.ref === c.id ? "selected" : ""}>mot: ${esc(c.label)}</option>`).join("")
+          }</select>`
+        : ""}
+      ${col.type === "comment" || col.type === "ts" ? "" :
+        `<label style="display:flex;align-items:center;gap:5px;margin:0;white-space:nowrap;text-transform:none;letter-spacing:0;font-size:12px;cursor:pointer" title="Read &amp; Comment-rollen (ljudteknikern) får ändra den här kolumnen">
+           <input type="checkbox" style="width:15px;height:15px;accent-color:#3b82f6" ${col.tech ? "checked" : ""} onchange="setColTech(${i},this.checked)">tekniker får ändra</label>`}
+      <button class="icon del" title="Ta bort kolumn" onclick="delCol(${i})">✕</button>`;
+    list.appendChild(row);
+  });
+}
+function addColumn(type) {
+  const id = "c" + Date.now().toString(36) + Math.floor(Math.random() * 1e4).toString(36);
+  const labels = { select: "Ny dropdown", tc: "Ny tidkod", check: "Ny kryssbox", vercheck: "Inladdad" };
+  const col = { id, label: labels[type] || "Ny kolumn", type: type || "text",
+                group: state.activeView || 1 };
+  if (type === "select") col.options = [];
+  if (type === "vercheck") {
+    const ref = state.columns.find(c => c.id === "version") || state.columns.find(c => (c.type === "text" || c.type === "short") && c.id !== "titel");
+    col.ref = ref ? ref.id : "version";
+    col.tech = true;
+  }
+  state.columns.push(col);
+  renderCols(); render();
+}
+function renameCol(i, v) { state.columns[i].label = v; render(); }
+function setColGroup(i, v) { state.columns[i].group = parseInt(v, 10); render(); }
+function setColOptions(i, v) {
+  state.columns[i].options = v.split(",").map(s => s.trim()).filter(Boolean);
+  render();
+}
+function delCol(i) {
+  const col = state.columns[i];
+  const hasData = state.cues.some(c => c.f && c.f[col.id]);
+  if (hasData && !confirm(`Kolumnen "${col.label}" innehåller data. Ta bort ändå?`)) return;
+  snapshot(`före borttagning av kolumn ${col.label}`, true);
+  state.columns.splice(i, 1);
+  renderCols(); render();
+}
+function moveCol(i, d) {
+  const j = i + d;
+  if (j < 0 || j >= state.columns.length) return;
+  [state.columns[i], state.columns[j]] = [state.columns[j], state.columns[i]];
+  renderCols(); render();
+}
+
+// ---------- Auto-detektering av cuer ----------
+let audioEnv = null;   // { env (dB per fönster), win (s), dur (s), name }
+let detected = [];     // [{ start, end, sel }]
+
+function toggleDetect() {
+  const p = document.getElementById("detect-panel");
+  p.classList.toggle("open");
+  if (p.classList.contains("open")) {
+    closeOtherPanels("detect-panel");
+    p.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+}
+function detStatus(msg) { document.getElementById("det-status").textContent = msg; }
+
+let detFile = null;
+async function analyzeAudio() {
+  const file = document.getElementById("audio-in").files[0];
+  if (!file) { toast("Välj en ljudfil först"); return; }
+  detFile = file;
+  detPeaksCache = null;
+  detStatus(`Läser ${file.name} (${(file.size / 1048576).toFixed(0)} MB) …`);
+  await new Promise(r => setTimeout(r, 30)); // låt statusen ritas
+  try {
+    const head = new Uint8Array(await file.slice(0, 4).arrayBuffer());
+    const isWav = head[0] === 0x52 && head[1] === 0x49 && head[2] === 0x46 && head[3] === 0x46; // "RIFF"
+    audioEnv = isWav ? await analyzeWavStreaming(file) : await analyzeViaDecode(file);
+    audioEnv.name = file.name;
+    setupPlayback(file);
+    detectRegions();
+  } catch (e) {
+    detStatus("Kunde inte läsa filen — WAV fungerar säkrast i webbläsaren. (" + (e.message || e) + ")");
+  }
+}
+
+// Strömmande WAV-läsning: klarar godtyckligt stora filer utan att ladda allt i minnet
+async function analyzeWavStreaming(file) {
+  const hd = new DataView(await file.slice(0, 65536).arrayBuffer());
+  let pos = 12, fmt = null, dataStart = -1, dataLen = 0;
+  while (pos + 8 <= hd.byteLength) {
+    const id = String.fromCharCode(hd.getUint8(pos), hd.getUint8(pos + 1), hd.getUint8(pos + 2), hd.getUint8(pos + 3));
+    const size = hd.getUint32(pos + 4, true);
+    if (id === "fmt ") {
+      fmt = {
+        format: hd.getUint16(pos + 8, true),
+        ch: hd.getUint16(pos + 10, true),
+        sr: hd.getUint32(pos + 12, true),
+        bits: hd.getUint16(pos + 22, true)
+      };
+    } else if (id === "data") { dataStart = pos + 8; dataLen = size; break; }
+    pos += 8 + size + (size % 2);
+  }
+  if (!fmt || dataStart < 0) throw new Error("ogiltig WAV-header");
+  if (fmt.format === 0xFFFE) fmt.format = fmt.bits === 32 ? 3 : 1; // WAVE_FORMAT_EXTENSIBLE: gissa
+  const bytesPer = fmt.bits / 8, frameBytes = bytesPer * fmt.ch;
+  const dataEnd = Math.min(dataStart + dataLen, file.size);
+  const totalFrames = Math.floor((dataEnd - dataStart) / frameBytes);
+  const win = 0.05, sw = Math.round(fmt.sr * win);
+
+  const env = new Float32Array(Math.floor(totalFrames / sw));
+  let ei = 0, acc = 0, cnt = 0;
+  let CHUNK = 8 * 1024 * 1024; CHUNK -= CHUNK % frameBytes;
+
+  for (let p = dataStart; p < dataEnd; p += CHUNK) {
+    const buf = await file.slice(p, Math.min(p + CHUNK, dataEnd)).arrayBuffer();
+    const dv = new DataView(buf);
+    const nF = Math.floor(buf.byteLength / frameBytes);
+    for (let i = 0; i < nF; i++) {
+      let pw = 0;
+      for (let c = 0; c < fmt.ch; c++) {
+        const off = i * frameBytes + c * bytesPer;
+        let v;
+        if (fmt.format === 3) v = dv.getFloat32(off, true);
+        else if (fmt.bits === 16) v = dv.getInt16(off, true) / 32768;
+        else if (fmt.bits === 24) v = (dv.getUint8(off) | (dv.getUint8(off + 1) << 8) | (dv.getInt8(off + 2) << 16)) / 8388608;
+        else v = dv.getInt32(off, true) / 2147483648;
+        pw += v * v;
+      }
+      acc += pw / fmt.ch; cnt++;
+      if (cnt === sw && ei < env.length) {
+        env[ei++] = 10 * Math.log10(acc / sw + 1e-12);
+        acc = 0; cnt = 0;
+      }
+    }
+    detStatus(`Analyserar … ${Math.round(((p - dataStart) / (dataEnd - dataStart)) * 100)} %`);
+    await new Promise(r => setTimeout(r, 0)); // håll UI:t vid liv
+  }
+  return { env, win, dur: totalFrames / fmt.sr };
+}
+
+// Fallback för mp3/flac m.m. (laddar hela filen i minnet)
+async function analyzeViaDecode(file) {
+  const arr = await file.arrayBuffer();
+  const ctx = new (window.AudioContext || window.webkitAudioContext)();
+  const audio = await ctx.decodeAudioData(arr);
+  ctx.close();
+  const win = 0.05, sw = Math.round(audio.sampleRate * win);
+  const n = Math.floor(audio.length / sw);
+  const pow = new Float64Array(n);
+  for (let ch = 0; ch < audio.numberOfChannels; ch++) {
+    const d = audio.getChannelData(ch);
+    for (let i = 0; i < n; i++) {
+      let sum = 0;
+      const off = i * sw;
+      for (let j = 0; j < sw; j++) { const v = d[off + j]; sum += v * v; }
+      pow[i] += sum / sw;
+    }
+  }
+  const env = new Float32Array(n);
+  for (let i = 0; i < n; i++) env[i] = 10 * Math.log10(pow[i] / audio.numberOfChannels + 1e-12);
+  return { env, win, dur: audio.duration };
+}
+
+function detectRegions() {
+  if (!audioEnv) return;
+  const thr = parseFloat(document.getElementById("det-thresh").value) || -45;
+  const gapS = parseFloat(document.getElementById("det-gap").value) || 2;
+  const minLen = parseFloat(document.getElementById("det-minlen").value) || 4;
+  const { env, win } = audioEnv;
+
+  const runs = [];
+  let start = -1, lastActive = -1;
+  for (let i = 0; i < env.length; i++) {
+    if (env[i] > thr) {
+      if (start < 0) start = i;
+      lastActive = i;
+    } else if (start >= 0 && (i - lastActive) * win >= gapS) {
+      runs.push([start, lastActive]);
+      start = -1;
+    }
+  }
+  if (start >= 0) runs.push([start, lastActive]);
+
+  detected = runs
+    .map(([a, b]) => ({ start: a * win, end: (b + 1) * win, sel: true }))
+    .filter(r => r.end - r.start >= minLen);
+
+  detStatus(`${audioEnv.name}: ${fmtSec(audioEnv.dur)} analyserad · ${detected.length} cuer hittade (tröskel ${thr} dB, gap ${gapS} s)`);
+  renderDetected();
+  drawWave(thr);
+  detIdentify(true); // identifiera innehållet automatiskt om arkivet har filer
+}
+
+function fmtSec(s) {
+  const mi = Math.floor(s / 60), sec = Math.round(s % 60);
+  return `${mi}:${String(sec).padStart(2, "0")}`;
+}
+function detOffsetFrames() {
+  const f = parseTC(document.getElementById("det-offset").value);
+  return f != null ? f : 0;
+}
+function secToTC(sec) { return fmtTC(detOffsetFrames() + Math.round(sec * fps())); }
+
+// ---------- Uppspelning / scrubbing / zoom ----------
+let detAudio = null, detPlayhead = 0, scrubbing = false;
+let detView = null; // { s, e } i sekunder; null = hela filen
+
+function setupPlayback(file) {
+  detAudio = document.getElementById("det-audio");
+  if (detAudio.src) { detAudio.pause(); URL.revokeObjectURL(detAudio.src); }
+  detAudio.src = URL.createObjectURL(file);
+  detPlayhead = 0;
+  detView = null;
+  document.getElementById("det-playinfo").style.display = "block";
+  document.getElementById("det-tools").style.display = "flex";
+}
+
+function viewSpan() { return detView || { s: 0, e: audioEnv.dur }; }
+function clampView(s, e) {
+  const d = audioEnv.dur, w = e - s;
+  if (s < 0) { e -= s; s = 0; }
+  if (e > d) { s -= e - d; e = d; s = Math.max(0, s); }
+  return { s, e };
+}
+function zoomWave(factor) {
+  if (!audioEnv) return;
+  const v = viewSpan();
+  const c = (detPlayhead > v.s && detPlayhead < v.e) ? detPlayhead : (v.s + v.e) / 2;
+  let w = Math.max(1, Math.min(audioEnv.dur, (v.e - v.s) * factor));
+  detView = clampView(c - w / 2, c + w / 2);
+  if (detView.e - detView.s >= audioEnv.dur) detView = null;
+  redrawWave();
+}
+function zoomAll() { detView = null; redrawWave(); }
+function redrawWave() {
+  if (audioEnv) drawWave(parseFloat(document.getElementById("det-thresh").value) || -70);
+}
+function playheadTick() {
+  if (!detAudio || detAudio.paused) return;
+  detPlayhead = detAudio.currentTime;
+  // följ med spelhuvudet när man är inzoomad
+  if (detView && (detPlayhead > detView.e || detPlayhead < detView.s)) {
+    const w = detView.e - detView.s;
+    detView = clampView(detPlayhead - w * 0.1, detPlayhead - w * 0.1 + w);
+  }
+  updateTimeLabel(); redrawWave();
+  requestAnimationFrame(playheadTick);
+}
+function updateTimeLabel() {
+  document.getElementById("det-time").textContent = secToTC(detPlayhead);
+}
+function waveSeek(e) {
+  const cv = document.getElementById("det-wave");
+  const rect = cv.getBoundingClientRect();
+  const v = viewSpan();
+  const frac = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+  const t = v.s + frac * (v.e - v.s);
+  detPlayhead = t;
+  if (detAudio) detAudio.currentTime = t;
+  updateTimeLabel(); redrawWave();
+}
+function initWaveEvents() {
+  const cv = document.getElementById("det-wave");
+  cv.addEventListener("pointerdown", e => {
+    if (!audioEnv || !detAudio) return;
+    scrubbing = true;
+    cv.setPointerCapture(e.pointerId);
+    waveSeek(e);
+    detAudio.play().then(() => requestAnimationFrame(playheadTick)).catch(() => {});
+  });
+  cv.addEventListener("pointermove", e => { if (scrubbing) waveSeek(e); });
+  const stop = () => { if (scrubbing) { scrubbing = false; detAudio && detAudio.pause(); } };
+  cv.addEventListener("pointerup", stop);
+  cv.addEventListener("pointercancel", stop);
+  cv.addEventListener("wheel", e => {
+    if (!audioEnv) return;
+    e.preventDefault();
+    const v = viewSpan();
+    const rect = cv.getBoundingClientRect();
+    const frac = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) {
+      // panorera i sidled
+      const shift = (v.e - v.s) * (e.deltaX / 500);
+      detView = clampView(v.s + shift, v.e + shift);
+    } else {
+      // zooma vid muspekaren
+      const t = v.s + frac * (v.e - v.s);
+      const f = e.deltaY > 0 ? 1.25 : 0.8;
+      const w = Math.max(1, Math.min(audioEnv.dur, (v.e - v.s) * f));
+      detView = clampView(t - frac * w, t - frac * w + w);
+    }
+    if (detView.e - detView.s >= audioEnv.dur) detView = null;
+    redrawWave();
+  }, { passive: false });
+}
+function playRegion(i) {
+  if (!detAudio) return;
+  if (!detAudio.paused) { detAudio.pause(); return; }
+  detAudio.currentTime = detPlayhead = detected[i].start;
+  detAudio.play().then(() => requestAnimationFrame(playheadTick)).catch(() => {});
+}
+
+// ---------- Slå ihop / dela ----------
+function mergeSelected() {
+  const sel = detected.filter(r => r.sel);
+  if (sel.length < 2) { toast("Markera minst två cuer att slå ihop"); return; }
+  const merged = { start: Math.min(...sel.map(r => r.start)), end: Math.max(...sel.map(r => r.end)), sel: true };
+  detected = detected.filter(r => !r.sel);
+  detected.push(merged);
+  detected.sort((a, b) => a.start - b.start);
+  renderDetected(); redrawWave();
+  toast(`${sel.length} cuer ihopslagna till en`);
+  detIdentify(true);
+}
+function splitAtPlayhead() {
+  const t = detPlayhead;
+  const i = detected.findIndex(r => t > r.start && t < r.end);
+  if (i < 0) { toast("Ställ spelhuvudet inuti en cue först (klicka i vågformen)"); return; }
+  const r = detected[i];
+  detected.splice(i, 1,
+    { start: r.start, end: t, sel: true },
+    { start: t, end: r.end, sel: true });
+  renderDetected(); redrawWave();
+  toast(`Cue delad vid ${secToTC(t)}`);
+  detIdentify(true);
+}
+
+function renderDetected() {
+  const el = document.getElementById("det-results");
+  if (!detected.length) { el.innerHTML = ""; return; }
+  el.innerHTML = `<table class="det-table">
+    <thead><tr><th></th><th></th><th>#</th><th>TC In</th><th>TC Ut</th><th>Längd</th><th>Innehåll</th></tr></thead>
+    <tbody>` +
+    detected.map((r, i) => `<tr>
+      <td><input type="checkbox" ${r.sel ? "checked" : ""} onchange="detected[${i}].sel=this.checked"></td>
+      <td><button class="icon" title="Spela/pausa från cue-start" onclick="playRegion(${i})">▶</button></td>
+      <td>${i + 1}</td>
+      <td class="mono">${secToTC(r.start)}</td>
+      <td class="mono">${secToTC(r.end)}</td>
+      <td class="mono">${fmtSec(r.end - r.start)}</td>
+      <td>${r.matches && r.matches.length
+        ? `<select title="${esc(r.matches.map(m => m.path).join("\n"))}"
+             onchange="detected[${i}].matchSel=parseInt(this.value);this.title=detected[${i}].matches[this.value].path">` +
+          r.matches.map((m, mi) =>
+            `<option value="${mi}" ${r.matchSel === mi ? "selected" : ""}>${esc(m.name)} (${m.score})</option>`).join("") +
+          `</select>`
+        : `<span style="color:var(--muted)">${r.matches ? "okänd" : "–"}</span>`}</td>
+    </tr>`).join("") +
+    `</tbody></table>
+    <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap">
+      <button class="primary" onclick="addDetected()">Lägg till valda som cuer</button>
+      <button onclick="detectRegions()">Detektera om med nya inställningar</button>
+    </div>`;
+}
+
+// Identifiera varje detekterad region mot SongSpot-arkivet (en enda genomsökning)
+let detPeaksCache = null; // fingerprint av aktuell mixdown, återanvänds vid omdetektering
+let detIdentifying = false;
+
+async function getMixPeaks() {
+  if (detPeaksCache) return detPeaksCache;
+  detStatus("Fingerprintar mixdown för identifiering …");
+  const { samples, sr } = await fpGetMono(detFile, "Mixdown");
+  const peaks = await fpPeaks(samples, sr, "Mixdown");
+  return (detPeaksCache = { peaks, sr });
+}
+
+async function detIdentify(auto) {
+  if (detIdentifying) return;
+  if (!detected.length) { if (!auto) toast("Kör en analys först"); return; }
+  if (!detFile) { if (!auto) toast("Ingen ljudfil laddad"); return; }
+  detIdentifying = true;
+  fpStatusSink = detStatus; // visa progressen i Auto-detect-panelen
+  try {
+    const total = await idbCountTracks();
+    if (!total) {
+      detStatus(document.getElementById("det-status").textContent +
+        " · Innehåll: SongSpot-arkivet är tomt — skanna en mapp först");
+      return;
+    }
+    const { peaks, sr } = await getMixPeaks();
+    const frameDur = FP_HOP / sr;
+    // gemensamt index: hash → [[regionIdx, t1], ...]
+    const idx = new Map();
+    const regHashCount = detected.map(() => 0);
+    detected.forEach((r, ri) => {
+      const f0 = r.start / frameDur, f1 = r.end / frameDur;
+      const rp = peaks.filter(p => p.t >= f0 && p.t <= f1);
+      for (const [h, t] of fpHashes(rp)) {
+        let arr = idx.get(h);
+        if (!arr) idx.set(h, arr = []);
+        arr.push([ri, t]);
+        regHashCount[ri]++;
+      }
+    });
+    const found = detected.map(() => new Map()); // ri → path → {score,name,path}
+    let scanned = 0;
+    detStatus(`Söker bland ${total} filer i arkivet …`);
+    await idbEachTrack(track => {
+      scanned++;
+      if (scanned % 50 === 0) detStatus(`Söker i arkivet … ${scanned} av ${total} filer genomsökta`);
+      const tfd = FP_HOP / track.sr;
+      const per = new Map(); // ri → Map(offset-bin → count)
+      const H = track.hashes;
+      for (let i = 0; i < H.length; i += 2) {
+        const arr = idx.get(H[i]);
+        if (!arr) continue;
+        for (const [ri, tC] of arr) {
+          const bin = Math.floor(H[i + 1] * tfd - tC * frameDur);
+          let m = per.get(ri);
+          if (!m) per.set(ri, m = new Map());
+          m.set(bin, (m.get(bin) || 0) + 1);
+        }
+      }
+      for (const [ri, m] of per) {
+        let best = 0;
+        for (const [b, c] of m) best = Math.max(best, c + (m.get(b + 1) || 0));
+        if (best >= Math.max(10, regHashCount[ri] * 0.03)) {
+          found[ri].set(track.path, { score: best, name: track.name, path: track.path });
+        }
+      }
+    });
+    detected.forEach((r, ri) => {
+      r.matches = [...found[ri].values()].sort((a, b) => b.score - a.score).slice(0, 8);
+      r.matchSel = r.matches.length ? 0 : -1;
+    });
+    const hits = detected.filter(r => r.matches.length).length;
+    detStatus(`Identifiering klar: ${hits} av ${detected.length} cuer matchade arkivet (${scanned} filer genomsökta)`);
+    renderDetected();
+  } catch (e) { detStatus("Fel vid identifiering: " + (e.message || e)); }
+  finally { detIdentifying = false; fpStatusSink = null; }
+}
+
+function addDetected() {
+  const sel = detected.filter(r => r.sel);
+  if (!sel.length) { toast("Inga cuer valda"); return; }
+  snapshot("före tillägg av detekterade cuer", true);
+  sel.forEach(r => {
+    const f = {
+      no: nextNo(),
+      tc: secToTC(r.start),
+      comments: `Auto-detekterad · längd ${fmtSec(r.end - r.start)} · slut ${secToTC(r.end)}`
+    };
+    if (r.matches && r.matchSel >= 0 && r.matches[r.matchSel]) {
+      const m = r.matches[r.matchSel];
+      f.comments += ` · SongSpot: ${m.name} (${m.score})`;
+    }
+    if (state.columns.some(c => c.id === "filmcut")) f.filmcut = state.meta.cut || "";
+    state.cues.push({ f });
+  });
+  render();
+  toast(`${sel.length} cuer tillagda`);
+  // fäll ihop panelen och visa tabellen
+  if (detAudio) detAudio.pause();
+  document.getElementById("detect-panel").classList.remove("open");
+  document.getElementById("cue-table").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function drawWave(thr) {
+  const cv = document.getElementById("det-wave");
+  cv.style.display = "block";
+  const W = cv.clientWidth, H = 110;
+  cv.width = W * 2; cv.height = H * 2; // retina
+  const g = cv.getContext("2d");
+  g.scale(2, 2);
+  g.clearRect(0, 0, W, H);
+  const { env, win } = audioEnv;
+  const v = viewSpan();
+  const span = v.e - v.s;
+  const tx = t => ((t - v.s) / span) * W;
+  const lo = -60, hi = 0;
+  const y = db => H - ((Math.max(lo, Math.min(hi, db)) - lo) / (hi - lo)) * H;
+
+  // detekterade regioner
+  g.fillStyle = "rgba(31,170,60,.25)";
+  detected.forEach(r => {
+    if (r.end < v.s || r.start > v.e) return;
+    const x0 = tx(Math.max(r.start, v.s)), x1 = tx(Math.min(r.end, v.e));
+    g.fillRect(x0, 0, x1 - x0, H);
+  });
+  // envelope inom vyfönstret
+  g.strokeStyle = "#d4a843"; g.lineWidth = 1;
+  g.beginPath();
+  for (let x = 0; x < W; x++) {
+    const i0 = Math.max(0, Math.floor((v.s + (x / W) * span) / win));
+    const i1 = Math.min(env.length - 1, Math.max(i0, Math.floor((v.s + ((x + 1) / W) * span) / win)));
+    let m = -120;
+    for (let i = i0; i <= i1; i++) m = Math.max(m, env[i]);
+    x === 0 ? g.moveTo(x, y(m)) : g.lineTo(x, y(m));
+  }
+  g.stroke();
+  // tröskellinje
+  g.strokeStyle = "#c95555"; g.setLineDash([4, 4]);
+  g.beginPath(); g.moveTo(0, y(thr)); g.lineTo(W, y(thr)); g.stroke();
+  g.setLineDash([]);
+  // spelhuvud
+  if (detPlayhead > v.s && detPlayhead < v.e) {
+    const px = tx(detPlayhead);
+    g.strokeStyle = "#e8eaed"; g.lineWidth = 1.5;
+    g.beginPath(); g.moveTo(px, 0); g.lineTo(px, H); g.stroke();
+  }
+  // zoomindikator
+  if (detView) {
+    g.fillStyle = "rgba(232,234,237,.5)"; g.font = "10px sans-serif";
+    g.fillText(`${secToTC(v.s)} – ${secToTC(v.e)}`, 6, 12);
+  }
+}
+
+// ---------- Snapshot-historik ----------
+const HKEY_LOCAL = "cuesheet-v3-history";
+function HKEYf() { return cloudActive() ? "cuesheet-hist-" + cloud.project.id : HKEY_LOCAL; }
+let lastSnapTime = 0;
+
+function snapshot(label, force) {
+  if (!isAdmin()) return;
+  try {
+    const HKEY = HKEYf();
+    const hist = JSON.parse(localStorage.getItem(HKEY) || "[]");
+    const cur = JSON.stringify(state);
+    if (hist.length && hist[hist.length - 1].s === cur) return; // ingen ändring
+    if (!force && Date.now() - lastSnapTime < 120000) return;   // max var 2:e min för auto
+    hist.push({ t: Date.now(), label: label || "auto", n: state.cues.length, s: cur });
+    while (hist.length > 30) hist.shift();
+    localStorage.setItem(HKEY, JSON.stringify(hist));
+    lastSnapTime = Date.now();
+  } catch (e) {}
+}
+
+function applyState(data) {
+  state = data;
+  if (!state.meta) state.meta = { prod: "", ep: "", cut: "", datum: "", fps: "25", team: "" };
+  if (!state.meta.team) state.meta.team = "";
+  if (!state.recordings) state.recordings = [];
+  if (state.recActive === undefined) state.recActive = false;
+  if (!TEMPLATES[state.template]) state.template = "film";
+  if (!state.columns || !state.columns.length) state.columns = JSON.parse(JSON.stringify(tpl().columns));
+  migrateTemplate(state);
+  ensureCueIds();
+  if (cloudActive()) applyCloudComments();
+  Object.entries(state.meta).forEach(([k, v]) => {
+    const el = document.getElementById("m-" + k);
+    if (el) el.value = v;
+  });
+  render(); renderCols();
+}
+
+function toggleHistory() {
+  const p = document.getElementById("hist-panel");
+  p.classList.toggle("open");
+  if (p.classList.contains("open")) { closeOtherPanels("hist-panel"); renderHistory(); p.scrollIntoView({ behavior: "smooth", block: "start" }); }
+}
+
+function renderHistory() {
+  let hist = [];
+  try { hist = JSON.parse(localStorage.getItem(HKEYf()) || "[]"); } catch (e) {}
+  const el = document.getElementById("hist-list");
+  if (!hist.length) { el.innerHTML = `<div class="col-hint">Inga snapshots ännu — de skapas automatiskt medan du jobbar.</div>`; return; }
+  el.innerHTML = `<table class="det-table"><thead><tr><th>Tidpunkt</th><th>Händelse</th><th>Cuer</th><th></th></tr></thead><tbody>` +
+    hist.slice().reverse().map((h, ri) => {
+      const i = hist.length - 1 - ri;
+      const d = new Date(h.t);
+      return `<tr>
+        <td class="mono">${d.toLocaleDateString("sv-SE")} ${d.toLocaleTimeString("sv-SE")}</td>
+        <td>${esc(h.label)}</td>
+        <td>${h.n}</td>
+        <td><button class="icon" onclick="restoreSnapshot(${i})">Återställ</button></td>
+      </tr>`;
+    }).join("") + `</tbody></table>`;
+}
+
+function restoreSnapshot(i) {
+  try {
+    const hist = JSON.parse(localStorage.getItem(HKEYf()) || "[]");
+    if (!hist[i]) return;
+    if (!confirm(`Återställ till ${new Date(hist[i].t).toLocaleTimeString("sv-SE")} (${hist[i].n} cuer)? Nuvarande läge sparas också i historiken.`)) return;
+    snapshot("före återställning", true);
+    applyState(JSON.parse(hist[i].s));
+    renderHistory();
+    toast("Återställt");
+  } catch (e) { toast("Kunde inte återställa"); }
+}
+
+// ---------- Persistens ----------
+const KEY = "cuesheet-v3";
+const META_KEYS = ["prod", "ep", "cut", "datum", "fps", "team"];
+function save() {
+  if (!isAdmin()) return; // Read & Comment ändrar aldrig arket
+  META_KEYS.forEach(k => {
+    const el = document.getElementById("m-" + k);
+    if (el) state.meta[k] = el.value;
+  });
+  if (cloudActive()) { cloudSaveState(); snapshot("auto"); return; } // molnprojekt: rör inte det lokala arket
+  try { localStorage.setItem(KEY, JSON.stringify(state)); } catch (e) {}
+  snapshot("auto");
+}
+function migrateOld(old) {
+  // från v2 (dynamiska kolumner med titel/tcIn) eller v1
+  const cues = (old.cues || []).map(c => {
+    const f = c.f || {};
+    return { f: {
+      no: "", titel: f.titel || c.titel || "",
+      status: "", compstat: "",
+      filename: "", tc: c.tcIn || "",
+      filmcut: "", assign: "", comments: ""
+    }};
+  });
+  cues.forEach((c, i) => c.f.no = String(i + 1));
+  return {
+    meta: { prod: (old.meta && old.meta.prod) || "", ep: "",
+            cut: (old.meta && old.meta.cut) || "", datum: (old.meta && old.meta.datum) || "",
+            fps: (old.meta && old.meta.fps) || "25", team: "" },
+    columns: JSON.parse(JSON.stringify(DEFAULT_COLUMNS)),
+    cues
+  };
+}
+function load() {
+  try {
+    const raw = localStorage.getItem(KEY);
+    if (raw) { state = JSON.parse(raw); }
+    else {
+      const old = localStorage.getItem("cuesheet-v2") || localStorage.getItem("cuesheet-v1");
+      if (old) state = migrateOld(JSON.parse(old));
+    }
+  } catch (e) {}
+  if (!state.columns || !state.columns.length) state.columns = JSON.parse(JSON.stringify(DEFAULT_COLUMNS));
+  // synka in nya standardval för Status om gamla defaults ligger kvar
+  const st = state.columns.find(c => c.id === "status");
+  if (st && (st.options || []).length <= 2) {
+    st.options = DEFAULT_COLUMNS.find(c => c.id === "status").options.slice();
+  }
+  const pm = state.columns.find(c => c.id === "premix");
+  if (pm && !(pm.options || []).length) pm.options = ["Full mix settings imported"];
+  // Comments-kolumnen är numera en kommentarsknapp (gammal fritext flyttas in i tråden vid rendering)
+  const cc = state.columns.find(c => c.id === "comments");
+  if (cc && cc.type === "text") cc.type = "comment";
+  // lägg till nytillkomna standardkolumner i sparade projekt
+  if ((state.colVer || 1) < COL_VERSION) {
+    DEFAULT_COLUMNS.forEach(dc => {
+      if (!state.columns.some(c => c.id === dc.id)) {
+        state.columns.push(JSON.parse(JSON.stringify(dc)));
+      }
+    });
+    state.colVer = COL_VERSION;
+  }
+  // backfyll vy-grupper på kolumner som saknar dem
+  const groupMap = Object.fromEntries(DEFAULT_COLUMNS.map(c => [c.id, c.group]));
+  state.columns.forEach(c => {
+    if (c.group === undefined) c.group = groupMap[c.id] !== undefined ? groupMap[c.id] : 3;
+  });
+  if (!state.activeView) state.activeView = 1;
+  if (!state.meta.team) state.meta.team = "";
+  if (!state.recordings) state.recordings = [];
+  if (state.recActive === undefined) state.recActive = false;
+  if (!TEMPLATES[state.template]) state.template = "film";
+  migrateTemplate(state);
+  ensureCueIds();
+  Object.entries(state.meta).forEach(([k, v]) => {
+    const el = document.getElementById("m-" + k);
+    if (el) el.value = v;
+  });
+}
+document.querySelectorAll(".meta-grid input, .meta-grid select")
+  .forEach(el => el.addEventListener("input", () => {
+    save();
+    if (el.id === "m-fps" || el.id === "m-team") render();
+  }));
+
+// ---------- Export / import ----------
+function fileBase() {
+  const clean = s => (s || "").replace(/[^\wåäöÅÄÖ -]/g, "").trim().replace(/\s+/g, "_");
+  const parts = [clean(state.meta.prod) || "cuesheet", clean(state.meta.ep), clean(state.meta.cut)];
+  return parts.filter(Boolean).join("_");
+}
+
+function exportJson() {
+  save();
+  const blob = new Blob([JSON.stringify(state, null, 2)], { type: "application/json" });
+  dl(blob, fileBase() + ".json");
+  toast("Projekt sparat som JSON");
+}
+
+function importJson(ev) {
+  const file = ev.target.files[0];
+  if (!file) return;
+  const r = new FileReader();
+  r.onload = () => {
+    try {
+      let data = JSON.parse(r.result);
+      if (!data.columns || data.cues?.some(c => c.tcIn !== undefined)) data = migrateOld(data);
+      snapshot("före JSON-import", true);
+      applyState(data);
+      toast("Projekt laddat");
+    } catch (e) { toast("Kunde inte läsa filen"); }
+  };
+  r.readAsText(file);
+  ev.target.value = "";
+}
+
+// ---------- Fingerprint-motor (används av SongSpot) ----------
+const FP_FFT = 1024, FP_HOP = 512;
+let fpStatusSink = null; // styr var progress visas (detect-panelen eller SongSpot)
+function fpStatus(m) { (fpStatusSink || archStatus)(m); }
+
+// Iterativ radix-2 FFT, in-place
+function fft(re, im) {
+  const n = re.length;
+  for (let i = 1, j = 0; i < n; i++) {
+    let bit = n >> 1;
+    for (; j & bit; bit >>= 1) j ^= bit;
+    j ^= bit;
+    if (i < j) { [re[i], re[j]] = [re[j], re[i]]; [im[i], im[j]] = [im[j], im[i]]; }
+  }
+  for (let len = 2; len <= n; len <<= 1) {
+    const ang = -2 * Math.PI / len, wr = Math.cos(ang), wi = Math.sin(ang);
+    for (let i = 0; i < n; i += len) {
+      let cr = 1, ci = 0;
+      for (let k = 0; k < len / 2; k++) {
+        const a = i + k, b = i + k + len / 2;
+        const vr = re[b] * cr - im[b] * ci, vi = re[b] * ci + im[b] * cr;
+        re[b] = re[a] - vr; im[b] = im[a] - vi;
+        re[a] += vr; im[a] += vi;
+        const ncr = cr * wr - ci * wi; ci = cr * wi + ci * wr; cr = ncr;
+      }
+    }
+  }
+}
+
+// Mono-samples nedsamplade till ~12 kHz, strömmande för WAV
+async function fpGetMono(file, label) {
+  const head = new Uint8Array(await file.slice(0, 12).arrayBuffer());
+  const tag = (o) => String.fromCharCode(head[o], head[o + 1], head[o + 2], head[o + 3]);
+  if (tag(0) === "RIFF") return fpStreamWavMono(file, label);
+  if (tag(0) === "FORM" && (tag(8) === "AIFF" || tag(8) === "AIFC")) return fpStreamAiffMono(file, label);
+  // fallback: avkoda + resampla (laddar hela filen i minnet)
+  const arr = await file.arrayBuffer();
+  const ac = new (window.AudioContext || window.webkitAudioContext)();
+  const buf = await ac.decodeAudioData(arr); ac.close();
+  const target = 12000, len = Math.ceil(buf.duration * target);
+  const oc = new OfflineAudioContext(1, len, target);
+  const src = oc.createBufferSource(); src.buffer = buf; src.connect(oc.destination); src.start();
+  const out = await oc.startRendering();
+  return { samples: out.getChannelData(0), sr: target };
+}
+
+async function fpStreamWavMono(file, label) {
+  const hd = new DataView(await file.slice(0, 65536).arrayBuffer());
+  let pos = 12, fmt = null, dataStart = -1, dataLen = 0;
+  while (pos + 8 <= hd.byteLength) {
+    const id = String.fromCharCode(hd.getUint8(pos), hd.getUint8(pos + 1), hd.getUint8(pos + 2), hd.getUint8(pos + 3));
+    const size = hd.getUint32(pos + 4, true);
+    if (id === "fmt ") {
+      fmt = { format: hd.getUint16(pos + 8, true), ch: hd.getUint16(pos + 10, true),
+              sr: hd.getUint32(pos + 12, true), bits: hd.getUint16(pos + 22, true) };
+    } else if (id === "data") { dataStart = pos + 8; dataLen = size; break; }
+    pos += 8 + size + (size % 2);
+  }
+  if (!fmt || dataStart < 0) throw new Error("ogiltig WAV-header");
+  if (fmt.format === 0xFFFE) fmt.format = fmt.bits === 32 ? 3 : 1;
+  const bytesPer = fmt.bits / 8, frameBytes = bytesPer * fmt.ch;
+  const dataEnd = Math.min(dataStart + dataLen, file.size);
+  const totalFrames = Math.floor((dataEnd - dataStart) / frameBytes);
+  const decim = Math.max(1, Math.round(fmt.sr / 12000));
+  const sr = fmt.sr / decim;
+  const samples = new Float32Array(Math.floor(totalFrames / decim));
+  let oi = 0, acc = 0, cnt = 0;
+  let CHUNK = 8 * 1024 * 1024; CHUNK -= CHUNK % frameBytes;
+
+  for (let p = dataStart; p < dataEnd; p += CHUNK) {
+    const buf = await file.slice(p, Math.min(p + CHUNK, dataEnd)).arrayBuffer();
+    const dv = new DataView(buf);
+    const nF = Math.floor(buf.byteLength / frameBytes);
+    for (let i = 0; i < nF; i++) {
+      let s = 0;
+      for (let c = 0; c < fmt.ch; c++) {
+        const off = i * frameBytes + c * bytesPer;
+        let v;
+        if (fmt.format === 3) v = dv.getFloat32(off, true);
+        else if (fmt.bits === 16) v = dv.getInt16(off, true) / 32768;
+        else if (fmt.bits === 24) v = (dv.getUint8(off) | (dv.getUint8(off + 1) << 8) | (dv.getInt8(off + 2) << 16)) / 8388608;
+        else v = dv.getInt32(off, true) / 2147483648;
+        s += v;
+      }
+      acc += s / fmt.ch; cnt++;
+      if (cnt === decim) { if (oi < samples.length) samples[oi++] = acc / decim; acc = 0; cnt = 0; }
+    }
+    if (label) fpStatus(`${label} … läser ${Math.round(((p - dataStart) / (dataEnd - dataStart)) * 100)} %`);
+    await new Promise(r => setTimeout(r, 0));
+  }
+  return { samples, sr };
+}
+
+// Strömmande AIFF/AIFC-läsare (big-endian PCM; 'sowt' = little-endian)
+async function fpStreamAiffMono(file, label) {
+  const hd = new DataView(await file.slice(0, 65536).arrayBuffer());
+  const ext80 = off => { // 80-bitars extended float (sample rate)
+    const expo = hd.getUint16(off) & 0x7FFF;
+    const hi = hd.getUint32(off + 2), lo = hd.getUint32(off + 6);
+    if (!expo && !hi && !lo) return 0;
+    return (hi * 4294967296 + lo) * Math.pow(2, expo - 16383 - 63);
+  };
+  let pos = 12, ch = 0, bits = 0, sr = 0, comp = "NONE", dataStart = -1, dataLen = 0;
+  while (pos + 8 <= hd.byteLength) {
+    const id = String.fromCharCode(hd.getUint8(pos), hd.getUint8(pos + 1), hd.getUint8(pos + 2), hd.getUint8(pos + 3));
+    const size = hd.getUint32(pos + 4); // big-endian
+    if (id === "COMM") {
+      ch = hd.getUint16(pos + 8);
+      bits = hd.getUint16(pos + 14);
+      sr = Math.round(ext80(pos + 16));
+      if (size > 18) comp = String.fromCharCode(hd.getUint8(pos + 26), hd.getUint8(pos + 27), hd.getUint8(pos + 28), hd.getUint8(pos + 29));
+    } else if (id === "SSND") {
+      const offset = hd.getUint32(pos + 8);
+      dataStart = pos + 16 + offset;
+      dataLen = size - 8 - offset;
+      break;
+    }
+    pos += 8 + size + (size % 2);
+  }
+  if (!ch || dataStart < 0) throw new Error("ogiltig AIFF-header");
+  if (!["NONE", "twos", "sowt"].includes(comp)) throw new Error(`komprimerad AIFC (${comp}) stöds inte`);
+  const le = comp === "sowt";
+  const bytesPer = bits / 8, frameBytes = bytesPer * ch;
+  const dataEnd = Math.min(dataStart + dataLen, file.size);
+  const totalFrames = Math.floor((dataEnd - dataStart) / frameBytes);
+  const decim = Math.max(1, Math.round(sr / 12000));
+  const outSr = sr / decim;
+  const samples = new Float32Array(Math.floor(totalFrames / decim));
+  let oi = 0, acc = 0, cnt = 0;
+  let CHUNK = 8 * 1024 * 1024; CHUNK -= CHUNK % frameBytes;
+
+  for (let p = dataStart; p < dataEnd; p += CHUNK) {
+    const buf = await file.slice(p, Math.min(p + CHUNK, dataEnd)).arrayBuffer();
+    const dv = new DataView(buf);
+    const nF = Math.floor(buf.byteLength / frameBytes);
+    for (let i = 0; i < nF; i++) {
+      let s = 0;
+      for (let c = 0; c < ch; c++) {
+        const off = i * frameBytes + c * bytesPer;
+        let v;
+        if (bits === 16) v = dv.getInt16(off, le) / 32768;
+        else if (bits === 24) v = le
+          ? (dv.getUint8(off) | (dv.getUint8(off + 1) << 8) | (dv.getInt8(off + 2) << 16)) / 8388608
+          : ((dv.getInt8(off) << 16) | (dv.getUint8(off + 1) << 8) | dv.getUint8(off + 2)) / 8388608;
+        else if (bits === 32) v = dv.getInt32(off, le) / 2147483648;
+        else v = (dv.getInt8(off)) / 128; // 8-bit
+        s += v;
+      }
+      acc += s / ch; cnt++;
+      if (cnt === decim) { if (oi < samples.length) samples[oi++] = acc / decim; acc = 0; cnt = 0; }
+    }
+    if (label) fpStatus(`${label} … läser ${Math.round(((p - dataStart) / (dataEnd - dataStart)) * 100)} %`);
+    await new Promise(r => setTimeout(r, 0));
+  }
+  return { samples, sr: outSr };
+}
+
+// Spektrala peakar: topp-5 lokala maxima per FFT-frame
+async function fpPeaks(samples, sr, label) {
+  const win = new Float32Array(FP_FFT);
+  for (let i = 0; i < FP_FFT; i++) win[i] = 0.5 - 0.5 * Math.cos(2 * Math.PI * i / (FP_FFT - 1));
+  const re = new Float32Array(FP_FFT), im = new Float32Array(FP_FFT);
+  const nFrames = Math.max(0, Math.floor((samples.length - FP_FFT) / FP_HOP));
+  const peaks = [];
+  for (let fr = 0; fr < nFrames; fr++) {
+    const off = fr * FP_HOP;
+    for (let i = 0; i < FP_FFT; i++) { re[i] = samples[off + i] * win[i]; im[i] = 0; }
+    fft(re, im);
+    const cand = [];
+    for (let b = 2; b < FP_FFT / 2 - 1; b++) {
+      const m = re[b] * re[b] + im[b] * im[b];
+      const mPrev = re[b - 1] * re[b - 1] + im[b - 1] * im[b - 1];
+      const mNext = re[b + 1] * re[b + 1] + im[b + 1] * im[b + 1];
+      if (m > 1e-10 && m >= mPrev && m >= mNext) cand.push([m, b]);
+    }
+    cand.sort((a, b) => b[0] - a[0]);
+    for (let k = 0; k < Math.min(5, cand.length); k++) peaks.push({ t: fr, f: cand[k][1] });
+    if (fr % 2000 === 1999 && label) {
+      fpStatus(`${label} … analyserar ${Math.round((fr / nFrames) * 100)} %`);
+      await new Promise(r => setTimeout(r, 0));
+    }
+  }
+  return peaks;
+}
+
+// Hasha peak-par: (f1, f2, dt) → 30-bitars heltal
+function fpHashes(peaks) {
+  const out = [];
+  for (let i = 0; i < peaks.length; i++) {
+    let fan = 0;
+    for (let j = i + 1; j < peaks.length && fan < 3; j++) {
+      const dt = peaks[j].t - peaks[i].t;
+      if (dt < 3) continue;
+      if (dt > 80) break;
+      out.push([peaks[i].f * 1048576 + peaks[j].f * 1024 + dt, peaks[i].t]);
+      fan++;
+    }
+  }
+  return out;
+}
+
+// ---------- SongSpot: skanna diskar, identifiera okända klipp ----------
+const ARCH_DB = "cuesheet-fp-archive", ARCH_EXT = /\.(wav|aif|aiff|aifc|mp3|flac|m4a|ogg)$/i;
+
+function archStatus(m) { document.getElementById("arch-status").textContent = m; }
+function toggleArchive() {
+  const p = document.getElementById("arch-panel");
+  p.classList.toggle("open");
+  if (p.classList.contains("open")) { closeOtherPanels("arch-panel"); updateArchCount(); p.scrollIntoView({ behavior: "smooth", block: "start" }); }
+}
+
+function idbOpen() {
+  return new Promise((res, rej) => {
+    const r = indexedDB.open(ARCH_DB, 1);
+    r.onupgradeneeded = () => r.result.createObjectStore("tracks", { keyPath: "path" });
+    r.onsuccess = () => res(r.result);
+    r.onerror = () => rej(r.error);
+  });
+}
+function idbPutTrack(t) {
+  return idbOpen().then(db => new Promise((res, rej) => {
+    const tx = db.transaction("tracks", "readwrite");
+    tx.objectStore("tracks").put(t);
+    tx.oncomplete = () => { db.close(); res(); };
+    tx.onerror = () => { db.close(); rej(tx.error); };
+  }));
+}
+function idbGetTrack(path) {
+  return idbOpen().then(db => new Promise((res, rej) => {
+    const r = db.transaction("tracks").objectStore("tracks").get(path);
+    r.onsuccess = () => { db.close(); res(r.result); };
+    r.onerror = () => { db.close(); rej(r.error); };
+  }));
+}
+function idbEachTrack(cb) { // cb måste vara synkron (IndexedDB-transaktioner dör vid await)
+  return idbOpen().then(db => new Promise((res, rej) => {
+    const cur = db.transaction("tracks").objectStore("tracks").openCursor();
+    cur.onsuccess = () => {
+      const c = cur.result;
+      if (!c) { db.close(); res(); return; }
+      cb(c.value);
+      c.continue();
+    };
+    cur.onerror = () => { db.close(); rej(cur.error); };
+  }));
+}
+function idbCountTracks() {
+  return idbOpen().then(db => new Promise((res, rej) => {
+    const r = db.transaction("tracks").objectStore("tracks").count();
+    r.onsuccess = () => { db.close(); res(r.result); };
+    r.onerror = () => { db.close(); rej(r.error); };
+  }));
+}
+function idbClearTracks() {
+  return idbOpen().then(db => new Promise((res, rej) => {
+    const tx = db.transaction("tracks", "readwrite");
+    tx.objectStore("tracks").clear();
+    tx.oncomplete = () => { db.close(); res(); };
+    tx.onerror = () => { db.close(); rej(tx.error); };
+  }));
+}
+
+async function updateArchCount() {
+  try {
+    const n = await idbCountTracks();
+    document.getElementById("arch-count").textContent = `${n} filer i arkivet`;
+  } catch (e) {
+    document.getElementById("arch-count").textContent =
+      "Arkivet otillgängligt — webbläsaren blockerar databasen (IndexedDB) för lokala filer. Testa Chrome.";
+  }
+}
+
+async function pickArchiveDir() {
+  if (window.showDirectoryPicker) {
+    try {
+      const dir = await showDirectoryPicker();
+      archStatus("Letar ljudfiler …");
+      const files = [];
+      await collectAudioFiles(dir, dir.name, files);
+      if (!files.length) { archStatus("Inga ljudfiler hittades i mappen"); return; }
+      await archiveScan(files);
+    } catch (e) {
+      if (e.name !== "AbortError") archStatus("Fel: " + (e.message || e));
+    }
+  } else {
+    document.getElementById("arch-dir-in").click(); // fallback: webbläsarens mappväljare
+  }
+}
+
+async function collectAudioFiles(dirHandle, path, out) {
+  for await (const [name, handle] of dirHandle.entries()) {
+    if (handle.kind === "file") {
+      if (ARCH_EXT.test(name)) {
+        const f = await handle.getFile();
+        f._relPath = path + "/" + name;
+        out.push(f);
+        if (out.length % 25 === 0) archStatus(`Letar ljudfiler … ${out.length} hittade`);
+      }
+    } else if (handle.kind === "directory") {
+      try { await collectAudioFiles(handle, path + "/" + name, out); } catch (e) { /* hoppa över otillgängliga mappar */ }
+    }
+  }
+}
+
+async function archiveScan(files) {
+  const audio = [...files].filter(f => ARCH_EXT.test(f.name));
+  if (!audio.length) { archStatus("Inga ljudfiler hittades i mappen"); return; }
+  let done = 0, skipped = 0, failed = 0, filtered = 0;
+  const failNames = [];
+  const minS = parseFloat(document.getElementById("arch-min").value) || 0;
+  const maxS = (parseFloat(document.getElementById("arch-max").value) || 20) * 60;
+  for (const file of audio) {
+    const path = file._relPath || file.webkitRelativePath || file.name;
+    try {
+      // snabbfilter: för små filer kan inte nå min-längden (ens hårt komprimerade)
+      if (file.size < minS * 8000) { filtered++; done++; continue; }
+      const existing = await idbGetTrack(path);
+      if (existing && existing.size === file.size && existing.mtime === file.lastModified) {
+        skipped++; done++;
+        continue;
+      }
+      archStatus(`Fingerprintar ${done + 1}/${audio.length}: ${file.name}`);
+      const { samples, sr } = await fpGetMono(file, null);
+      const dur = samples.length / sr;
+      if (dur < minS || dur > maxS) { filtered++; done++; continue; }
+      const peaks = await fpPeaks(samples, sr, null);
+      const pairs = fpHashes(peaks);
+      const flat = new Int32Array(pairs.length * 2);
+      pairs.forEach(([h, t], i) => { flat[i * 2] = h; flat[i * 2 + 1] = t; });
+      await idbPutTrack({
+        path, name: file.name.replace(/\.[^.]+$/, ""), size: file.size,
+        mtime: file.lastModified, dur: samples.length / sr, sr, hashes: flat
+      });
+      done++;
+    } catch (e) {
+      failed++; done++;
+      console.warn(path, e);
+      if (e && (e.name === "QuotaExceededError" || /quota/i.test(e.message || ""))) {
+        archStatus(`STOPP: webbläsarens lagring är full efter ${done - skipped - failed} filer — arkivet rymmer inte mer. Töm arkivet eller skanna färre mappar.`);
+        updateArchCount();
+        return;
+      }
+      if (failNames.length < 3) failNames.push(file.name);
+    }
+  }
+  archStatus(`Klart: ${done - skipped - failed - filtered} nya fingerprintade, ${skipped} redan i arkivet` +
+    (filtered ? `, ${filtered} utanför längdgränserna` : "") +
+    (failed ? `, ${failed} kunde inte läsas (t.ex. ${failNames.join(", ")})` : ""));
+  updateArchCount();
+  document.getElementById("arch-dir-in").value = "";
+  if (detected.length && detFile) detIdentify(true); // uppdatera Innehåll-kolumnen direkt
+}
+
+async function archiveIdentify() {
+  const file = document.getElementById("arch-id-in").files[0];
+  if (!file) { toast("Välj en fil att identifiera"); return; }
+  const total = await idbCountTracks();
+  if (!total) { toast("Arkivet är tomt — skanna en mapp först"); return; }
+  try {
+    archStatus(`Fingerprintar ${file.name} …`);
+    const { samples, sr } = await fpGetMono(file, file.name);
+    const peaks = await fpPeaks(samples, sr, file.name);
+    const clipHashes = fpHashes(peaks);
+    const idx = new Map();
+    for (const [h, t] of clipHashes) {
+      let arr = idx.get(h);
+      if (!arr) idx.set(h, arr = []);
+      arr.push(t);
+    }
+    const thr = Math.max(15, clipHashes.length * 0.05);
+    const results = [];
+    let scanned = 0;
+    archStatus(`Söker bland ${total} filer …`);
+    await idbEachTrack(track => {
+      scanned++;
+      const frameDur = FP_HOP / track.sr;
+      const counts = new Map();
+      const H = track.hashes;
+      for (let i = 0; i < H.length; i += 2) {
+        const arr = idx.get(H[i]);
+        if (!arr) continue;
+        for (const tC of arr) {
+          const offSec = (H[i + 1] - tC) * frameDur;
+          const bin = Math.floor(offSec);
+          let e = counts.get(bin);
+          if (!e) counts.set(bin, e = [0, 0]);
+          e[0]++; e[1] += offSec;
+        }
+      }
+      let best = null;
+      for (const [b, e] of counts) {
+        const n = counts.get(b + 1) || [0, 0];
+        const c = e[0] + n[0];
+        if (c >= thr && (!best || c > best.c)) best = { c, pos: (e[1] + n[1]) / c };
+      }
+      if (best) results.push({ name: track.name, path: track.path, pos: Math.max(0, best.pos), dur: track.dur, score: best.c });
+    });
+    results.sort((a, b) => b.score - a.score);
+    archStatus(results.length
+      ? `${results.length} möjliga ursprung hittade (${scanned} filer genomsökta)`
+      : `Ingen träff bland ${scanned} filer — ursprunget finns inte i arkivet ännu`);
+    renderArchResults(results.slice(0, 20));
+  } catch (e) { archStatus("Fel: " + (e.message || e)); }
+}
+
+function renderArchResults(results) {
+  const el = document.getElementById("arch-results");
+  if (!results.length) { el.innerHTML = ""; return; }
+  el.innerHTML = `<table class="det-table">
+    <thead><tr><th>Ursprungsfil</th><th>Sökvägen</th><th>Klippet börjar</th><th>Styrka</th></tr></thead><tbody>` +
+    results.map(r => `<tr>
+      <td>${esc(r.name)}</td>
+      <td style="color:var(--muted);font-size:12px">${esc(r.path)}</td>
+      <td class="mono">${fmtSec(r.pos)} in i originalet (${fmtSec(r.dur)} långt)</td>
+      <td class="mono">${r.score}</td>
+    </tr>`).join("") + `</tbody></table>`;
+}
+
+async function archiveClear() {
+  const n = await idbCountTracks();
+  if (!n) { toast("Arkivet är redan tomt"); return; }
+  if (!confirm(`Är du säker? Detta tar bort alla ${n} fingerprints ur arkivet. (Ljudfilerna påverkas inte.)`)) return;
+  await idbClearTracks();
+  updateArchCount();
+  document.getElementById("arch-results").innerHTML = "";
+  archStatus("Arkivet tömt");
+}
+
+// ---------- EDL/XML-import ----------
+function importEdlXml(ev) {
+  const file = ev.target.files[0];
+  if (!file) return;
+  const r = new FileReader();
+  r.onload = () => {
+    try {
+      const text = r.result;
+      const clips = text.trimStart().startsWith("<") ? parseXmeml(text) : parseEdl(text);
+      if (!clips.length) { toast("Inga klipp hittades i filen"); return; }
+      snapshot("före EDL/XML-import", true);
+      clips.forEach(c => {
+        const f = {
+          no: nextNo(),
+          filename: c.name || "",
+          tc: c.tcIn,
+          comments: `Import ${esc(file.name)}` + (c.tcOut ? ` · slut ${c.tcOut}` : "")
+        };
+        if (state.columns.some(col => col.id === "filmcut")) f.filmcut = state.meta.cut || "";
+        state.cues.push({ f });
+      });
+      render();
+      toast(`${clips.length} klipp importerade från ${file.name}`);
+    } catch (e) { toast("Kunde inte tolka filen: " + (e.message || e)); }
+  };
+  r.readAsText(file);
+  ev.target.value = "";
+}
+
+// CMX3600 EDL: eventrader + "* FROM CLIP NAME:"-kommentarer
+function parseEdl(text) {
+  const clips = [];
+  const lines = text.split(/\r?\n/);
+  const tcRe = /(\d{2}[:;]\d{2}[:;]\d{2}[:;]\d{2})/g;
+  let cur = null;
+  for (const line of lines) {
+    const ev = line.match(/^\s*\d{3,6}\s+\S+\s+(\S+)\s+\S+/);
+    if (ev) {
+      const tcs = line.match(tcRe);
+      if (tcs && tcs.length >= 4) {
+        cur = { name: "", tcIn: tcs[2].replace(/;/g, ":"), tcOut: tcs[3].replace(/;/g, ":") };
+        clips.push(cur);
+      }
+      continue;
+    }
+    const nm = line.match(/^\s*\*\s*(?:FROM\s+)?CLIP\s+NAME:\s*(.+?)\s*$/i);
+    if (nm && cur && !cur.name) cur.name = nm[1].replace(/\.[^.]+$/, "");
+  }
+  // slå ihop dubbletter (stereospår ger ofta samma klipp två gånger)
+  const seen = new Set();
+  return clips.filter(c => {
+    const k = c.name + "|" + c.tcIn;
+    if (seen.has(k)) return false;
+    seen.add(k); return true;
+  });
+}
+
+// Premiere/FCP7 xmeml: clipitems på ljudspår
+function parseXmeml(text) {
+  const doc = new DOMParser().parseFromString(text, "text/xml");
+  if (doc.querySelector("parsererror")) throw new Error("ogiltig XML");
+  const seq = doc.querySelector("sequence");
+  if (!seq) throw new Error("ingen <sequence> hittad (exportera som Final Cut Pro XML)");
+  const tb = parseInt(seq.querySelector("rate > timebase")?.textContent || "25", 10);
+  const startStr = seq.querySelector(":scope > timecode > string")?.textContent ||
+                   seq.querySelector("timecode > string")?.textContent || "00:00:00:00";
+  const startFrames = parseTC(startStr.replace(/;/g, ":"), tb) || 0;
+
+  const clips = [];
+  const items = seq.querySelectorAll("audio clipitem, media > audio clipitem");
+  (items.length ? items : seq.querySelectorAll("clipitem")).forEach(ci => {
+    const start = parseInt(ci.querySelector(":scope > start")?.textContent ?? "-1", 10);
+    const end = parseInt(ci.querySelector(":scope > end")?.textContent ?? "-1", 10);
+    if (start < 0) return; // klipp inne i övergångar hoppar vi över
+    const name = (ci.querySelector(":scope > name")?.textContent || "").replace(/\.[^.]+$/, "");
+    clips.push({
+      name,
+      tcIn: fmtTC(startFrames + start, tb),
+      tcOut: end > start ? fmtTC(startFrames + end, tb) : ""
+    });
+  });
+  const seen = new Set();
+  const out = clips.filter(c => {
+    const k = c.name + "|" + c.tcIn;
+    if (seen.has(k)) return false;
+    seen.add(k); return true;
+  });
+  out.sort((a, b) => (parseTC(a.tcIn, tb) || 0) - (parseTC(b.tcIn, tb) || 0));
+  if (tb !== fps()) toast(`Obs: XML-filen är ${tb} fps, projektet ${fps()} fps`);
+  return out;
+}
+
+function exportXlsx() {
+  save();
+  const m = state.meta;
+  const rows = [
+    [m.ep || "", "", m.prod || ""],
+    ["", "", "", "", "Latest cut:", m.cut || ""],
+    [],
+    [...state.columns.map(c => c.label)]
+  ];
+  state.cues.forEach(c => {
+    rows.push(state.columns.map(col => {
+      if (col.type === "comment") return cmText(ensureCm(c));
+      const v = exportVal(c, col);
+      if (col.type === "vercheck") {
+        const cur = (getF(c, state.columns.find(x => x.id === col.ref)) || "").trim();
+        if (!v) return "";
+        return v.trim() === cur ? `✓ ${v}` : `${v} (ny: ${cur || "–"})`;
+      }
+      return col.type === "check" ? (v ? "✓" : "") : v;
+    }));
+  });
+  rows.push([]);
+  rows.push(["COUNT:", state.cues.length]);
+  rows.push(["CUE COUNT:", state.cues.length]);
+  rows.push(["APPROVED:", countOk("status", ["approved"])]);
+  rows.push(["COMPOSER OK:", countOk("compstat", ["ok"])]);
+  rows.push(["BOUNCED CUES:", state.cues.filter(c => c.f && c.f.bounced).length]);
+
+  const ws = XLSX.utils.aoa_to_sheet(rows);
+  ws["!cols"] = state.columns.map(c => {
+    if (c.type === "no") return { wch: 6 };
+    if (c.type === "check" || c.type === "sec") return { wch: 9 };
+    if (c.type === "short" || c.type === "dur" || c.type === "vercheck") return { wch: 11 };
+    if (c.type === "stemcheck") return { wch: 28 };
+    if (c.type === "tc" || c.type === "date" || c.type === "ts") return { wch: 13 };
+    if (c.id === "comments") return { wch: 40 };
+    if (c.id === "filename") return { wch: 36 };
+    return { wch: 18 };
+  });
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, (m.ep || "Cue Sheet").substring(0, 31));
+  XLSX.writeFile(wb, fileBase() + "_cuesheet.xlsx");
+  toast("Excel-fil exporterad");
+}
+
+// ---------- Export-meny + PDF (via utskrift) ----------
+let expDown = false;
+function openExport() {
+  document.getElementById("exp-sub").textContent = `${state.cues.length} cuer · ${GROUP_NAMES[state.activeView || 1]}`;
+  document.getElementById("exp-overlay").classList.add("open");
+}
+function closeExport() { document.getElementById("exp-overlay").classList.remove("open"); }
+
+function cellText(cue, col) {
+  // textversion av en cell (för PDF)
+  if (col.type === "comment") {
+    const cm = ensureCm(cue);
+    if (!cm.thread.length) return "";
+    return cm.thread.map(e => `<span class="cm-k">${esc(CM_KIND[e.k] || e.k)}</span> ${esc(e.t)}${e.by ? ` <span class="cm-k">– ${esc(e.by)}</span>` : ""}`).join("<br>");
+  }
+  const v = (exportVal(cue, col) || "").trim();
+  if (col.type === "check") return v ? "✓" : "";
+  if (col.type === "vercheck") {
+    const cur = (getF(cue, state.columns.find(x => x.id === col.ref)) || "").trim();
+    if (!v) return cur ? `<span class="ver-stale">☐ ${esc(cur)}</span>` : "";
+    return v === cur ? `<span class="ver-ok">☑ ${esc(v)}</span>` : `<span class="ver-stale">☐ ${esc(v)} → ${esc(cur || "–")}</span>`;
+  }
+  return esc(v);
+}
+
+function exportPdf(scope) {
+  if (!state.cues.length) { toast("Inga cuer att exportera"); return; }
+  save();
+  const m = state.meta;
+  const cols = scope === "all" ? state.columns : visibleCols();
+  const t = tpl().meta;
+  const metaParts = [
+    t.ep && m.ep ? `${t.ep}: ${m.ep}` : "",
+    t.cut && m.cut ? `${t.cut}: ${m.cut}` : "",
+    m.datum ? `Datum: ${m.datum}` : "",
+    state.template === "film" && m.fps ? `${m.fps} fps` : ""
+  ].filter(Boolean).map(esc).join(" · ");
+  const head = `<div class="pr-head">
+      <h2>${esc(m.prod || "Cue Sheet")}</h2>
+      <span class="pr-meta">${metaParts}</span>
+      <span class="pr-right">${esc(tpl().name)} · ${scope === "all" ? "alla kolumner" : esc(GROUP_NAMES[state.activeView || 1])}<br>${new Date().toLocaleString("sv-SE")}</span>
+    </div>`;
+  const thead = `<thead><tr>${cols.map(c => `<th>${esc(c.label)}</th>`).join("")}</tr></thead>`;
+  const tbody = `<tbody>${state.cues.map(cue => {
+    const cls = [isCut(cue) ? "row-cut" : "", state.columns.some(c => c.tint && getF(cue, c)) ? "row-tint" : ""].filter(Boolean).join(" ");
+    return `<tr class="${cls}">${cols.map(col => {
+      const v = (getF(cue, col) || "").trim();
+      const tdc = col.type === "no" ? "no" : (col.type === "check" || col.type === "vercheck") ? "c" : (col.type === "select" ? statusClass(v) : "");
+      return `<td class="${tdc}">${cellText(cue, col)}</td>`;
+    }).join("")}</tr>`;
+  }).join("")}</tbody>`;
+  const totals = document.getElementById("totals").textContent;
+  document.getElementById("print-area").innerHTML = head + `<table class="pr">${thead}${tbody}</table><div class="pr-foot"><span>${esc(totals)}</span></div>`;
+  const prevTitle = document.title;
+  document.title = fileBase() + "_cuesheet"; // blir förslag på filnamn i "Spara som PDF"
+  const cleanup = () => { document.title = prevTitle; window.removeEventListener("afterprint", cleanup); };
+  window.addEventListener("afterprint", cleanup);
+  setTimeout(() => window.print(), 50);
+}
+
+function dl(blob, name) {
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+// Tooltip som visar hela texten när ett fält är för smalt för sitt innehåll
+function showTip(el) {
+  const v = (el.value || "").trim();
+  if (!v || el.scrollWidth <= el.clientWidth + 1 || document.activeElement === el) return;
+  const t = document.getElementById("tip");
+  t.textContent = v;
+  t.classList.add("show");
+  const r = el.getBoundingClientRect();
+  const w = t.offsetWidth, h = t.offsetHeight;
+  let x = r.left, y = r.bottom + 6;
+  if (x + w > window.innerWidth - 12) x = Math.max(12, window.innerWidth - w - 12);
+  if (y + h > window.innerHeight - 12) y = r.top - h - 6;
+  t.style.left = x + "px"; t.style.top = y + "px";
+}
+function hideTip() { document.getElementById("tip").classList.remove("show"); }
+
+function toast(msg) {
+  const t = document.getElementById("toast");
+  t.textContent = msg;
+  t.classList.add("show");
+  setTimeout(() => t.classList.remove("show"), 2200);
+}
+
+// ======================================================================
+// MOLN (Supabase): GitHub-login, produktioner, roller, kommentarer, realtid
+// ======================================================================
+let sb = null;
+const cloud = { user: null, profile: null, project: null, members: [], chan: null, saveTimer: null, lastSent: "", localBackup: null };
+let projDown = false, invDown = false;
+
+function cloudActive() { return !!(sb && cloud.user && cloud.project); }
+function cloudConfigured() { return !!(SUPA.url && SUPA.anonKey && window.supabase); }
+function cstatus(t) { const el = document.getElementById("cloud-status"); if (el) el.textContent = t || ""; }
+function qs(k) { return new URLSearchParams(location.search).get(k); }
+function setUrl(params) {
+  const u = new URL(location.href);
+  ["p", "invite"].forEach(k => u.searchParams.delete(k));
+  Object.entries(params || {}).forEach(([k, v]) => v && u.searchParams.set(k, v));
+  history.replaceState(null, "", u.toString());
+}
+
+async function cloudInit() {
+  if (!cloudConfigured()) return; // lokalt läge
+  sb = window.supabase.createClient(SUPA.url, SUPA.anonKey);
+  document.getElementById("cloud-bar").style.display = "";
+  const { data: { session } } = await sb.auth.getSession();
+  await onAuth(session);
+  sb.auth.onAuthStateChange((ev, s) => {
+    const nid = s && s.user ? s.user.id : null, cid = cloud.user ? cloud.user.id : null;
+    if (nid !== cid) onAuth(s);
+  });
+}
+
+async function onAuth(session) {
+  cloud.user = session ? session.user : null;
+  const bar = id => document.getElementById(id);
+  if (!cloud.user) {
+    bar("btn-login").style.display = ""; bar("btn-logout").style.display = "none";
+    bar("btn-projects").style.display = "none"; bar("btn-invite").style.display = "none";
+    bar("cloud-user").innerHTML = `<span style="color:var(--muted)">Inte inloggad – arbetar lokalt i webbläsaren.</span>`;
+    bar("cloud-proj").textContent = "";
+    if (qs("invite")) { localStorage.setItem("cuesheet-pending-invite", qs("invite")); bar("cloud-user").innerHTML += ` <b>Logga in för att ta emot inbjudan.</b>`; }
+    return;
+  }
+  const md = cloud.user.user_metadata || {};
+  cloud.profile = { id: cloud.user.id, username: md.user_name || md.preferred_username || md.full_name || cloud.user.email || "användare", avatar_url: md.avatar_url || "" };
+  try { await sb.from("profiles").upsert(cloud.profile, { onConflict: "id" }); } catch (e) {}
+  bar("btn-login").style.display = "none"; bar("btn-logout").style.display = "";
+  bar("btn-projects").style.display = "";
+  bar("cloud-user").innerHTML = `${cloud.profile.avatar_url ? `<img class="avatar" src="${esc(cloud.profile.avatar_url)}">` : ""}<b>${esc(cloud.profile.username)}</b>`;
+
+  // inbjudan?
+  const token = qs("invite") || localStorage.getItem("cuesheet-pending-invite");
+  if (token) {
+    localStorage.removeItem("cuesheet-pending-invite");
+    const { data, error } = await sb.rpc("claim_invite", { p_token: token });
+    if (error || !data) { toast("Inbjudan ogiltig eller förbrukad"); setUrl({}); }
+    else { toast("Du har fått tillgång till produktionen"); await openProject(data); return; }
+  }
+  const pid = qs("p") || localStorage.getItem("cuesheet-last-project");
+  if (pid) { const ok = await openProject(pid); if (ok) return; }
+  openProjects();
+}
+
+function cloudLogin() {
+  const t = qs("invite"); if (t) localStorage.setItem("cuesheet-pending-invite", t);
+  sb.auth.signInWithOAuth({ provider: "github", options: { redirectTo: location.origin + location.pathname } });
+}
+async function cloudLogout() {
+  leaveProject();
+  await sb.auth.signOut();
+  location.href = location.origin + location.pathname;
+}
+
+// ---- Produktioner ----
+async function openProjects() {
+  if (!cloud.user) { toast("Logga in först"); return; }
+  document.getElementById("proj-overlay").classList.add("open");
+  const el = document.getElementById("proj-list");
+  el.innerHTML = `<div class="cm-empty">Hämtar…</div>`;
+  const { data, error } = await sb.from("projects").select("id,name,template,owner,updated_at,members(role,user_id)").order("updated_at", { ascending: false });
+  if (error) { el.innerHTML = `<div class="cm-empty">Kunde inte hämta: ${esc(error.message)}</div>`; return; }
+  if (!data.length) { el.innerHTML = `<div class="cm-empty">Inga produktioner ännu. Skapa en med knappen nedan.</div>`; return; }
+  el.innerHTML = data.map(p => {
+    const mine = p.members.find(m => m.user_id === cloud.user.id);
+    const r = p.owner === cloud.user.id || (mine && mine.role === "admin") ? "admin" : "commenter";
+    return `<div class="proj-row">
+      <div style="flex:1"><b>${esc(p.name)}</b><div class="muted">${esc((TEMPLATES[p.template] || {}).name || p.template)} · ändrad ${fmtTs(p.updated_at)}</div></div>
+      <span class="role-pill ${r}">${r === "admin" ? "Admin" : "Read & Comment"}</span>
+      <button class="primary" onclick="closeProjects();openProject('${p.id}')">Öppna</button>
+      ${p.owner === cloud.user.id ? `<button class="icon del" title="Ta bort produktion" onclick="deleteProject('${p.id}','${esc(p.name)}')">✕</button>` : ""}
+    </div>`;
+  }).join("");
+}
+function closeProjects() { document.getElementById("proj-overlay").classList.remove("open"); }
+
+async function cloudCreateProject(tplKey) {
+  const name = (document.getElementById("tpl-name").value || "").trim();
+  if (!name) { toast("Ge produktionen ett namn"); document.getElementById("tpl-name").focus(); return; }
+  const st = blankState(tplKey); st.meta.prod = name;
+  const { data, error } = await sb.from("projects").insert({ name, template: st.template, owner: cloud.user.id, state: st }).select("id").single();
+  if (error) { toast("Kunde inte skapa: " + error.message); return; }
+  await sb.from("members").upsert({ project_id: data.id, user_id: cloud.user.id, role: "admin" });
+  closeTemplatePicker();
+  await openProject(data.id);
+}
+async function deleteProject(id, name) {
+  if (!confirm(`Ta bort produktionen "${name}" permanent (inkl. kommentarer)?`)) return;
+  const { error } = await sb.from("projects").delete().eq("id", id);
+  if (error) { toast("Kunde inte ta bort: " + error.message); return; }
+  if (cloud.project && cloud.project.id === id) leaveProject();
+  openProjects();
+}
+
+async function openProject(id) {
+  const { data: p, error } = await sb.from("projects").select("id,name,template,owner,state,updated_at,members(role,user_id)").eq("id", id).maybeSingle();
+  if (error || !p) { toast("Produktionen hittades inte"); setUrl({}); localStorage.removeItem("cuesheet-last-project"); return false; }
+  leaveProject();
+  if (!cloud.localBackup) { try { cloud.localBackup = localStorage.getItem(KEY); } catch (e) {} }
+  cloud.project = p;
+  cloud.members = p.members || [];
+  const mine = cloud.members.find(m => m.user_id === cloud.user.id);
+  role = (p.owner === cloud.user.id || (mine && mine.role === "admin")) ? "admin" : "commenter";
+  localStorage.setItem("cuesheet-last-project", p.id);
+  setUrl({ p: p.id });
+  // ladda arket
+  const st = p.state && p.state.columns ? p.state : blankState(p.template);
+  st.recActive = false;
+  applyState(JSON.parse(JSON.stringify(st)));
+  cloud.lastSent = JSON.stringify(stripForCloud(state));
+  await Promise.all([reloadComments(), reloadTech()]);
+  render();
+  applyRole();
+  subscribeProject(p.id);
+  document.getElementById("cloud-proj").innerHTML = `· <b>${esc(p.name)}</b> <span class="role-pill ${role}">${role === "admin" ? "Admin" : "Read & Comment"}</span>`;
+  document.getElementById("btn-invite").style.display = role === "admin" ? "" : "none";
+  cstatus("synkad");
+  return true;
+}
+function leaveProject() {
+  if (cloud.chan) { try { sb.removeChannel(cloud.chan); } catch (e) {} cloud.chan = null; }
+  if (cloud.saveTimer) { clearTimeout(cloud.saveTimer); cloud.saveTimer = null; }
+  cloud.project = null; cloud.members = []; techVals = {};
+  role = "local";
+  applyRole();
+  document.getElementById("cloud-proj").textContent = "";
+  document.getElementById("btn-invite").style.display = "none";
+  cstatus("");
+}
+
+function applyRole() {
+  document.body.classList.toggle("commenter", role === "commenter");
+  document.querySelectorAll(".meta-grid input, .meta-grid select").forEach(el => el.disabled = role === "commenter");
+  if (role === "commenter") {
+    ["col-panel", "hist-panel", "detect-panel", "arch-panel"].forEach(id => { const el = document.getElementById(id); if (el) el.classList.remove("open"); });
+    if (state.recActive) { state.recActive = false; }
+  }
+  const sub = document.getElementById("sub-line");
+  if (sub) sub.textContent = cloudActive()
+    ? (role === "admin" ? "Molnprojekt · ändringar sparas automatiskt och syns direkt för teamet" : "Du har Read & Comment: läs, kommentera, fyll i teknikerfält och exportera Excel")
+    : "Musik-cue-sheets för film, TV och teater · autosparas i webbläsaren";
+}
+
+// ---- Spara arket (admin) ----
+function stripForCloud(s) {
+  const c = JSON.parse(JSON.stringify(s));
+  (c.cues || []).forEach(q => { delete q.cm; }); // kommentarer bor i egen tabell
+  delete c.recActive; delete c.recSel;
+  return c;
+}
+function cloudSaveState() {
+  if (!cloudActive() || !isAdmin()) return;
+  cstatus("sparar…");
+  clearTimeout(cloud.saveTimer);
+  cloud.saveTimer = setTimeout(async () => {
+    if (!cloudActive() || !isAdmin()) return;
+    const body = stripForCloud(state);
+    const json = JSON.stringify(body);
+    if (json === cloud.lastSent) { cstatus("synkad"); return; }
+    const { error } = await sb.from("projects").update({ state: body, name: state.meta.prod || cloud.project.name, updated_at: new Date().toISOString() }).eq("id", cloud.project.id);
+    if (error) { cstatus("kunde inte spara!"); toast("Sparfel: " + error.message); return; }
+    cloud.lastSent = json; cstatus("synkad");
+  }, 700);
+}
+function onRemoteState(row) {
+  if (!cloudActive() || !row || row.id !== cloud.project.id) return;
+  const json = JSON.stringify(row.state || {});
+  if (json === cloud.lastSent) return; // vårt eget eko
+  if (isAdmin() && document.activeElement && document.activeElement.tagName === "INPUT") {
+    // admin skriver just nu – vänta med att byta ut arket
+    setTimeout(() => onRemoteState(row), 1500); return;
+  }
+  const st = JSON.parse(json); st.recActive = state.recActive; st.activeView = state.activeView;
+  const open = document.getElementById("cm-overlay").classList.contains("open");
+  applyStateQuiet(st);
+  cloud.lastSent = json;
+  render(); if (open) renderCmThread();
+  cstatus("uppdaterad " + new Date().toLocaleTimeString("sv-SE"));
+}
+function applyStateQuiet(data) {
+  state = data;
+  if (!TEMPLATES[state.template]) state.template = "film";
+  migrateTemplate(state);
+  if (!state.recordings) state.recordings = [];
+  ensureCueIds();
+  Object.entries(state.meta || {}).forEach(([k, v]) => { const el = document.getElementById("m-" + k); if (el && document.activeElement !== el) el.value = v; });
+  applyCloudComments();
+}
+
+// ---- Kommentarer ----
+let cloudComments = []; // rader från comments-tabellen
+async function reloadComments() {
+  if (!cloudActive()) return;
+  const { data, error } = await sb.from("comments").select("*").eq("project_id", cloud.project.id).order("created_at");
+  if (error) { toast("Kunde inte hämta kommentarer"); return; }
+  cloudComments = data || [];
+  applyCloudComments();
+}
+function applyCloudComments() {
+  const byCue = {};
+  cloudComments.forEach(r => (byCue[r.cue_id] = byCue[r.cue_id] || []).push(r));
+  state.cues.forEach(c => { c.cm = cmFromRows(byCue[c.id] || []); });
+}
+async function cloudAddComment(cueId, kind, text) {
+  const { error } = await sb.from("comments").insert({ project_id: cloud.project.id, cue_id: cueId, kind, text: text || "", author: cloud.user.id, author_name: cloud.profile.username });
+  if (error) { toast("Kunde inte spara kommentar: " + error.message); return; }
+  await reloadComments(); render(); renderCmThread();
+}
+async function cloudDeleteComment(rid) {
+  const { error } = await sb.from("comments").delete().eq("id", rid);
+  if (error) { toast("Kunde inte ta bort: " + error.message); return; }
+  await reloadComments(); render(); renderCmThread();
+}
+async function cloudResetComments(cueId) {
+  const { error } = await sb.from("comments").delete().eq("project_id", cloud.project.id).eq("cue_id", cueId);
+  if (error) { toast("Kunde inte återställa: " + error.message); return; }
+  await reloadComments(); render();
+}
+
+// ---- Teknikerfält ----
+async function reloadTech() {
+  if (!cloudActive()) return;
+  const { data, error } = await sb.from("tech_fields").select("cue_id,field,value").eq("project_id", cloud.project.id);
+  if (error) return;
+  techVals = {};
+  (data || []).forEach(r => { (techVals[r.cue_id] = techVals[r.cue_id] || {})[r.field] = r.value || ""; });
+}
+async function cloudSetTech(cueId, field, value) {
+  cstatus("sparar…");
+  const { error } = await sb.from("tech_fields").upsert({ project_id: cloud.project.id, cue_id: cueId, field, value: value || "", updated_by: cloud.user.id, updated_at: new Date().toISOString() }, { onConflict: "project_id,cue_id,field" });
+  if (error) { toast("Kunde inte spara: " + error.message); cstatus("fel"); return; }
+  cstatus("synkad");
+}
+
+// ---- Realtid ----
+function subscribeProject(pid) {
+  cloud.chan = sb.channel("proj-" + pid)
+    .on("postgres_changes", { event: "*", schema: "public", table: "comments", filter: "project_id=eq." + pid },
+        async () => { await reloadComments(); render(); renderCmThread(); })
+    .on("postgres_changes", { event: "*", schema: "public", table: "tech_fields", filter: "project_id=eq." + pid },
+        async () => { await reloadTech(); render(); })
+    .on("postgres_changes", { event: "UPDATE", schema: "public", table: "projects", filter: "id=eq." + pid },
+        payload => onRemoteState(payload.new))
+    .on("postgres_changes", { event: "DELETE", schema: "public", table: "projects", filter: "id=eq." + pid },
+        () => { toast("Produktionen togs bort"); leaveProject(); openProjects(); })
+    .subscribe();
+}
+
+// ---- Inbjudningar & medlemmar ----
+async function openInvite() {
+  if (!cloudActive() || !isAdmin()) return;
+  document.getElementById("inv-overlay").classList.add("open");
+  document.getElementById("inv-sub").textContent = cloud.project.name;
+  await renderInvite();
+}
+function closeInvite() { document.getElementById("inv-overlay").classList.remove("open"); }
+async function renderInvite(newLink) {
+  const el = document.getElementById("inv-body");
+  const pid = cloud.project.id;
+  const [{ data: mem }, { data: inv }] = await Promise.all([
+    sb.from("members").select("user_id,role,profiles(username,avatar_url)").eq("project_id", pid),
+    sb.from("invites").select("token,role,created_at,expires_at,used_by").eq("project_id", pid).is("used_by", null).order("created_at", { ascending: false })
+  ]);
+  cloud.members = mem || [];
+  let h = "";
+  if (newLink) h += `<div class="col-hint" style="margin-bottom:4px">Ny inbjudningslänk – skicka den till personen:</div>
+    <div class="inv-link" id="inv-newlink">${esc(newLink)}</div>
+    <button onclick="navigator.clipboard.writeText(document.getElementById('inv-newlink').textContent).then(()=>toast('Länk kopierad'))">Kopiera länk</button><hr style="border:0;border-top:1px solid var(--border);margin:14px 0">`;
+  h += `<label>Medlemmar</label>`;
+  h += (cloud.members || []).map(m => {
+    const pr = m.profiles || {}; const isOwner = m.user_id === cloud.project.owner;
+    return `<div class="proj-row">
+      ${pr.avatar_url ? `<img class="avatar" src="${esc(pr.avatar_url)}">` : ""}<b>${esc(pr.username || m.user_id.slice(0, 8))}</b>
+      <span class="role-pill ${m.role}">${m.role === "admin" ? "Admin" : "Read & Comment"}</span>${isOwner ? `<span class="muted">ägare</span>` : ""}
+      <div class="spacer" style="flex:1"></div>
+      ${isOwner ? "" : `<button class="icon del" title="Ta bort åtkomst" onclick="removeMember('${m.user_id}')">✕</button>`}
+    </div>`;
+  }).join("") || `<div class="cm-empty">Bara du.</div>`;
+  if (inv && inv.length) {
+    h += `<label style="margin-top:12px">Aktiva inbjudningslänkar (ej använda)</label>` + inv.map(i => `
+      <div class="proj-row"><span class="role-pill ${i.role}">${i.role === "admin" ? "Admin" : "Read & Comment"}</span>
+        <span class="muted">skapad ${fmtTs(i.created_at)} · giltig till ${fmtTs(i.expires_at)}</span>
+        <div class="spacer" style="flex:1"></div>
+        <button class="icon" onclick="navigator.clipboard.writeText(inviteUrl('${i.token}')).then(()=>toast('Länk kopierad'))">Kopiera</button>
+        <button class="icon del" title="Återkalla" onclick="revokeInvite('${i.token}')">✕</button></div>`).join("");
+  }
+  el.innerHTML = h;
+}
+function inviteUrl(token) { return location.origin + location.pathname + "?invite=" + token; }
+async function createInvite(r) {
+  const token = Array.from(crypto.getRandomValues(new Uint8Array(18))).map(b => b.toString(16).padStart(2, "0")).join("");
+  const expires = new Date(Date.now() + 14 * 86400000).toISOString();
+  const { error } = await sb.from("invites").insert({ token, project_id: cloud.project.id, role: r, created_by: cloud.user.id, expires_at: expires });
+  if (error) { toast("Kunde inte skapa länk: " + error.message); return; }
+  await renderInvite(inviteUrl(token));
+}
+async function revokeInvite(token) {
+  await sb.from("invites").delete().eq("token", token);
+  renderInvite();
+}
+async function removeMember(uid) {
+  if (!confirm("Ta bort personens åtkomst till produktionen?")) return;
+  const { error } = await sb.from("members").delete().eq("project_id", cloud.project.id).eq("user_id", uid);
+  if (error) { toast("Kunde inte ta bort: " + error.message); return; }
+  renderInvite();
+}
+
+// ---- Start ----
+load();
+render();
+initWaveEvents();
+cloudInit();
+</script>
+</body>
+</html>
