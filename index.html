@@ -325,6 +325,22 @@ const SUPA = {
   <button id="btn-logout" style="display:none" onclick="cloudLogout()">Logga ut</button>
 </div>
 
+<!-- Visningsnamn -->
+<div id="name-overlay" class="overlay">
+  <div class="cm-box" role="dialog" aria-modal="true" style="max-width:420px">
+    <div class="cm-head"><b>Vad heter du?</b></div>
+    <div class="cm-input" style="padding-top:14px">
+      <label>Visningsnamn (syns vid dina kommentarer)</label>
+      <input id="name-input" placeholder="t.ex. Jakob" maxlength="40" onkeydown="if(event.key==='Enter')saveDisplayName()">
+    </div>
+    <div class="cm-foot">
+      <button class="primary" onclick="saveDisplayName()">Spara</button>
+      <div class="spacer"></div>
+      <button id="name-cancel" onclick="document.getElementById('name-overlay').classList.remove('open')">Avbryt</button>
+    </div>
+  </div>
+</div>
+
 <!-- Produktioner (molnprojekt) -->
 <div id="proj-overlay" class="overlay" onmousedown="projDown=(event.target===this)" onmouseup="if(projDown&&event.target===this)closeProjects();projDown=false">
   <div class="cm-box" role="dialog" aria-modal="true" style="max-width:640px">
@@ -2964,11 +2980,20 @@ async function onAuth(session) {
     return;
   }
   const md = cloud.user.user_metadata || {};
-  cloud.profile = { id: cloud.user.id, username: md.user_name || md.preferred_username || md.full_name || cloud.user.email || "användare", avatar_url: md.avatar_url || "" };
-  try { await sb.from("profiles").upsert(cloud.profile, { onConflict: "id" }); } catch (e) {}
+  const ghName = md.user_name || md.preferred_username || "";
+  cloud.profile = { id: cloud.user.id, username: ghName || md.full_name || cloud.user.email || "användare", avatar_url: md.avatar_url || "" };
+  // sparat visningsnamn vinner över metadata (så att ett eget namn inte skrivs över vid nästa login)
+  try {
+    const { data: pr } = await sb.from("profiles").select("username,avatar_url").eq("id", cloud.user.id).maybeSingle();
+    if (pr && pr.username) cloud.profile.username = pr.username;
+    if (pr && pr.avatar_url && !cloud.profile.avatar_url) cloud.profile.avatar_url = pr.avatar_url;
+    await sb.from("profiles").upsert(cloud.profile, { onConflict: "id" });
+  } catch (e) {}
   bar("btn-login").style.display = "none"; bar("btn-logout").style.display = ""; bar("login-email").style.display = "none";
   bar("btn-projects").style.display = "";
-  bar("cloud-user").innerHTML = `${cloud.profile.avatar_url ? `<img class="avatar" src="${esc(cloud.profile.avatar_url)}">` : ""}<b>${esc(cloud.profile.username)}</b>`;
+  renderUserName();
+  // mejlanvändare utan riktigt namn får ange ett
+  if (!ghName && (!cloud.profile.username || cloud.profile.username === cloud.user.email)) askDisplayName(true);
 
   // inbjudan?
   const token = qs("invite") || localStorage.getItem("cuesheet-pending-invite");
@@ -2981,6 +3006,29 @@ async function onAuth(session) {
   const pid = qs("p") || localStorage.getItem("cuesheet-last-project");
   if (pid) { const ok = await openProject(pid); if (ok) return; }
   openProjects();
+}
+
+function renderUserName() {
+  document.getElementById("cloud-user").innerHTML =
+    `${cloud.profile.avatar_url ? `<img class="avatar" src="${esc(cloud.profile.avatar_url)}">` : ""}` +
+    `<b style="cursor:pointer" title="Klicka för att ändra visningsnamn" onclick="askDisplayName(false)">${esc(cloud.profile.username)}</b>`;
+}
+function askDisplayName(required) {
+  const inp = document.getElementById("name-input");
+  inp.value = cloud.profile.username === cloud.user.email ? "" : (cloud.profile.username || "");
+  document.getElementById("name-cancel").style.display = required ? "none" : "";
+  document.getElementById("name-overlay").classList.add("open");
+  setTimeout(() => inp.focus(), 30);
+}
+async function saveDisplayName() {
+  const name = (document.getElementById("name-input").value || "").trim();
+  if (name.length < 2) { toast("Skriv minst två tecken"); return; }
+  const { error } = await sb.from("profiles").upsert({ id: cloud.user.id, username: name, avatar_url: cloud.profile.avatar_url || "" }, { onConflict: "id" });
+  if (error) { toast("Kunde inte spara: " + error.message); return; }
+  cloud.profile.username = name;
+  renderUserName();
+  document.getElementById("name-overlay").classList.remove("open");
+  toast(`Hej ${name}!`);
 }
 
 // Adress att komma tillbaka till efter inloggning – inbjudan följer med i länken
