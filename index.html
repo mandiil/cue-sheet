@@ -312,6 +312,11 @@ const SUPA = {
 <div class="panel toolbar" id="cloud-bar" style="display:none">
   <span id="cloud-user" class="totals" style="text-align:left"></span>
   <button class="primary" id="btn-login" onclick="cloudLogin()">Logga in med GitHub</button>
+  <span id="login-email" style="display:flex;gap:6px;align-items:center">
+    <span class="totals">eller</span>
+    <input id="otp-email" type="email" placeholder="din@mejladress.se" style="width:220px" onkeydown="if(event.key==='Enter')cloudLoginEmail()">
+    <button onclick="cloudLoginEmail()">Skicka inloggningslänk</button>
+  </span>
   <button id="btn-projects" style="display:none" onclick="openProjects()">Produktioner…</button>
   <button id="btn-invite" class="admin-only" style="display:none" onclick="openInvite()">Bjud in…</button>
   <span id="cloud-proj" class="totals" style="text-align:left"></span>
@@ -2951,7 +2956,7 @@ async function onAuth(session) {
   cloud.user = session ? session.user : null;
   const bar = id => document.getElementById(id);
   if (!cloud.user) {
-    bar("btn-login").style.display = ""; bar("btn-logout").style.display = "none";
+    bar("btn-login").style.display = ""; bar("btn-logout").style.display = "none"; bar("login-email").style.display = "flex";
     bar("btn-projects").style.display = "none"; bar("btn-invite").style.display = "none";
     bar("cloud-user").innerHTML = `<span style="color:var(--muted)">Inte inloggad – arbetar lokalt i webbläsaren.</span>`;
     bar("cloud-proj").textContent = "";
@@ -2961,7 +2966,7 @@ async function onAuth(session) {
   const md = cloud.user.user_metadata || {};
   cloud.profile = { id: cloud.user.id, username: md.user_name || md.preferred_username || md.full_name || cloud.user.email || "användare", avatar_url: md.avatar_url || "" };
   try { await sb.from("profiles").upsert(cloud.profile, { onConflict: "id" }); } catch (e) {}
-  bar("btn-login").style.display = "none"; bar("btn-logout").style.display = "";
+  bar("btn-login").style.display = "none"; bar("btn-logout").style.display = ""; bar("login-email").style.display = "none";
   bar("btn-projects").style.display = "";
   bar("cloud-user").innerHTML = `${cloud.profile.avatar_url ? `<img class="avatar" src="${esc(cloud.profile.avatar_url)}">` : ""}<b>${esc(cloud.profile.username)}</b>`;
 
@@ -2978,9 +2983,28 @@ async function onAuth(session) {
   openProjects();
 }
 
+// Adress att komma tillbaka till efter inloggning – inbjudan följer med i länken
+// (så att den fungerar även om mejllänken öppnas i en annan webbläsare)
+function loginReturnUrl() {
+  const t = qs("invite") || localStorage.getItem("cuesheet-pending-invite");
+  if (t) localStorage.setItem("cuesheet-pending-invite", t);
+  return location.origin + location.pathname + (t ? "?invite=" + encodeURIComponent(t) : "");
+}
 function cloudLogin() {
-  const t = qs("invite"); if (t) localStorage.setItem("cuesheet-pending-invite", t);
-  sb.auth.signInWithOAuth({ provider: "github", options: { redirectTo: location.origin + location.pathname } });
+  sb.auth.signInWithOAuth({ provider: "github", options: { redirectTo: loginReturnUrl() } });
+}
+async function cloudLoginEmail() {
+  const el = document.getElementById("otp-email");
+  const email = (el.value || "").trim();
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) { toast("Skriv en giltig mejladress"); el.focus(); return; }
+  const btn = el.nextElementSibling; btn.disabled = true;
+  const { error } = await sb.auth.signInWithOtp({ email, options: { emailRedirectTo: loginReturnUrl(), shouldCreateUser: true } });
+  btn.disabled = false;
+  if (error) { toast("Kunde inte skicka: " + error.message); return; }
+  document.getElementById("cloud-user").innerHTML =
+    `<b>Mejl skickat till ${esc(email)}.</b> <span style="color:var(--muted)">Öppna länken i mejlet så loggas du in. Kolla skräpposten om det dröjer.</span>`;
+  el.value = "";
+  toast("Inloggningslänk skickad");
 }
 async function cloudLogout() {
   leaveProject();
