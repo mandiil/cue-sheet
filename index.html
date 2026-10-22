@@ -457,7 +457,7 @@ const SUPA = {
         <option value="30">30 fps (29.97/30)</option>
       </select>
     </div>
-    <div data-m="team"><label title="Namnen används i Assign-kolumnerna">Team (kommaseparerat)</label><input id="m-team" placeholder="Name of team members"></div>
+    <div data-m="team"><label title="Namnen används i Assign-kolumnerna. I molnläge läggs alla medlemmar i produktionen till automatiskt.">Team (kommaseparerat)</label><input id="m-team" placeholder="Extra namn utöver medlemmarna"></div>
   </div>
 </div>
 
@@ -875,7 +875,10 @@ function fmtTC(frames, fr) {
 // ---------- Hjälp ----------
 function esc(s) { return (s || "").replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;"); }
 function teamNames() {
-  return (state.meta.team || "").split(",").map(s => s.trim()).filter(Boolean);
+  const typed = (state.meta.team || "").split(",").map(s => s.trim()).filter(Boolean);
+  // i molnläge ingår alla medlemmar i produktionen automatiskt (visningsnamn)
+  const members = cloudActive() ? (cloud.members || []).map(m => m.profiles && m.profiles.username).filter(Boolean) : [];
+  return [...new Set([...typed, ...members])];
 }
 function statusClass(v) {
   if (!v) return "";
@@ -3205,7 +3208,7 @@ async function deleteProject(id, name) {
 }
 
 async function openProject(id) {
-  const { data: p, error } = await sb.from("projects").select("id,name,template,owner,state,updated_at,members(role,user_id)").eq("id", id).maybeSingle();
+  const { data: p, error } = await sb.from("projects").select("id,name,template,owner,state,updated_at,members(role,user_id,profiles(username))").eq("id", id).maybeSingle();
   if (error || !p) { toast("Produktionen hittades inte"); setUrl({}); localStorage.removeItem("cuesheet-last-project"); return false; }
   leaveProject();
   if (!cloud.localBackup) { try { cloud.localBackup = localStorage.getItem(KEY); } catch (e) {} }
@@ -3356,7 +3359,19 @@ function subscribeProject(pid) {
         payload => onRemoteState(payload.new))
     .on("postgres_changes", { event: "DELETE", schema: "public", table: "projects", filter: "id=eq." + pid },
         () => { toast("Produktionen togs bort"); leaveProject(); openProjects(); })
+    .on("postgres_changes", { event: "*", schema: "public", table: "members", filter: "project_id=eq." + pid },
+        async () => { await reloadMembers(); render(); if (document.getElementById("inv-overlay").classList.contains("open")) renderInvite(); })
     .subscribe();
+}
+async function reloadMembers() {
+  if (!cloudActive()) return;
+  const { data } = await sb.from("members").select("role,user_id,profiles(username,avatar_url)").eq("project_id", cloud.project.id);
+  if (data) cloud.members = data;
+  // om min egen roll ändrats (eller jag tagits bort) – uppdatera
+  const mine = cloud.members.find(m => m.user_id === cloud.user.id);
+  if (!mine && cloud.project.owner !== cloud.user.id && cloud.level !== "superadmin") { toast("Din åtkomst till produktionen togs bort"); leaveProject(); showLanding("noaccess", "Din åtkomst togs bort."); return; }
+  const newRole = projectRole({ owner: cloud.project.owner, members: cloud.members });
+  if (newRole !== role) { role = newRole; applyRole(); document.getElementById("cloud-proj").innerHTML = `· <b>${esc(cloud.project.name)}</b> <span class="role-pill ${role}">${ROLE_LABEL[role]}</span>`; document.getElementById("btn-invite").style.display = isManager() ? "" : "none"; toast("Din roll är nu " + ROLE_LABEL[role]); }
 }
 
 // ---- Inbjudningar & medlemmar ----
