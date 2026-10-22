@@ -208,6 +208,21 @@ const SUPA = {
   .toast.show { opacity: 1; }
   .empty { text-align: center; color: var(--muted); padding: 30px 0; }
 
+  /* Landningssida (molnläge, ej inloggad / utan åtkomst) */
+  body.gated > *:not(#landing):not(.toast):not(#tip):not(#name-overlay) { display: none !important; }
+  #landing { display: none; min-height: calc(100vh - 48px); align-items: center; justify-content: center; }
+  body.gated #landing { display: flex; }
+  .land-box { max-width: 460px; width: 100%; text-align: center; }
+  .land-box .logo { height: 64px; width: auto; margin: 0 auto 18px; display: block; }
+  .land-box p.lead { color: var(--muted); font-size: 15px; line-height: 1.6; margin: 0 0 28px; }
+  .land-card { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 22px 24px; text-align: left; }
+  .land-card label { margin-top: 14px; }
+  .land-card .row { display: flex; gap: 8px; }
+  .land-card .row input { flex: 1; }
+  .land-card .or { text-align: center; color: var(--muted); font-size: 12px; margin: 14px 0 0; text-transform: uppercase; letter-spacing: .8px; }
+  .land-foot { color: var(--muted); font-size: 12px; margin-top: 18px; }
+  .land-msg { background: rgba(212,168,67,.12); border: 1px solid var(--accent-dim); border-radius: 8px; padding: 10px 14px; font-size: 13px; margin-bottom: 14px; }
+
   /* Utskrift / PDF */
   #print-area { display: none; }
   @media print {
@@ -311,6 +326,33 @@ const SUPA = {
 </head>
 <body>
 
+<!-- Landningssida -->
+<div id="landing">
+  <div class="land-box">
+    <img src="logo.png" alt="My Cue List" class="logo">
+    <p class="lead">Cue-listor för film, TV och teater.<br>Kompositör och ljudtekniker – samma lista, i realtid.</p>
+    <div class="land-card">
+      <div id="land-msg" class="land-msg" style="display:none"></div>
+      <div id="land-login">
+        <button class="primary" style="width:100%" onclick="cloudLogin()">Logga in med GitHub</button>
+        <div class="or">eller med e-post</div>
+        <label>Mejladress</label>
+        <div class="row">
+          <input id="land-email" type="email" placeholder="din@mejladress.se" onkeydown="if(event.key==='Enter')cloudLoginEmail('land-email')">
+          <button onclick="cloudLoginEmail('land-email')">Skicka länk</button>
+        </div>
+      </div>
+      <div id="land-noaccess" style="display:none">
+        <div class="row" style="align-items:center">
+          <span id="land-user" style="flex:1"></span>
+          <button onclick="cloudLogout()">Logga ut</button>
+        </div>
+      </div>
+    </div>
+    <div class="land-foot">Åtkomst sker via inbjudan från en produktion.</div>
+  </div>
+</div>
+
 <h1><img src="logo.png" alt="My Cue List" class="logo"></h1>
 <div class="sub" id="sub-line">Musik-cue-sheets för film, TV och teater · autosparas i webbläsaren</div>
 
@@ -353,7 +395,7 @@ const SUPA = {
     <div class="cm-head"><b>Produktioner</b><span class="cm-sub" id="proj-sub"></span></div>
     <div class="cm-thread" id="proj-list"></div>
     <div class="cm-foot">
-      <button class="primary" onclick="closeProjects();openTemplatePicker()">+ Ny produktion</button>
+      <button class="primary" id="btn-newproj" onclick="closeProjects();openTemplatePicker()">+ Ny produktion</button>
       <div class="spacer"></div>
       <button onclick="closeProjects()">Stäng</button>
     </div>
@@ -762,6 +804,7 @@ function applyTemplateMeta() {
 // --- Ny cue-sheet (mallväljare) ---
 let tplSel = "film", tplDown = false;
 function openTemplatePicker() {
+  if (sb && cloud.user && !cloud.canCreate) { toast("Ditt konto får inte skapa produktioner"); return; }
   tplSel = state.template || "film";
   renderTemplateGrid();
   const inCloud = !!(sb && cloud.user);
@@ -2962,8 +3005,19 @@ function setUrl(params) {
   history.replaceState(null, "", u.toString());
 }
 
+// Landningssidan visas i molnläge tills man är inloggad OCH har åtkomst till minst en produktion
+function showLanding(mode, msg) {
+  document.body.classList.add("gated");
+  const m = document.getElementById("land-msg");
+  m.style.display = msg ? "" : "none"; m.innerHTML = msg || "";
+  document.getElementById("land-login").style.display = mode === "noaccess" ? "none" : "";
+  document.getElementById("land-noaccess").style.display = mode === "noaccess" ? "" : "none";
+}
+function hideLanding() { document.body.classList.remove("gated"); }
+
 async function cloudInit() {
   if (!cloudConfigured()) return; // lokalt läge
+  showLanding("login");
   sb = window.supabase.createClient(SUPA.url, SUPA.anonKey);
   document.getElementById("cloud-bar").style.display = "";
   const { data: { session } } = await sb.auth.getSession();
@@ -2983,16 +3037,19 @@ async function onAuth(session) {
     bar("cloud-user").innerHTML = `<span style="color:var(--muted)">Inte inloggad – arbetar lokalt i webbläsaren.</span>`;
     bar("cloud-proj").textContent = "";
     if (qs("invite")) { localStorage.setItem("cuesheet-pending-invite", qs("invite")); bar("cloud-user").innerHTML += ` <b>Logga in för att ta emot inbjudan.</b>`; }
+    showLanding("login", qs("invite") ? "Du har blivit inbjuden till en produktion. Logga in för att öppna den." : "");
     return;
   }
   const md = cloud.user.user_metadata || {};
   const ghName = md.user_name || md.preferred_username || "";
   cloud.profile = { id: cloud.user.id, username: ghName || md.full_name || cloud.user.email || "användare", avatar_url: md.avatar_url || "" };
   // sparat visningsnamn vinner över metadata (så att ett eget namn inte skrivs över vid nästa login)
+  cloud.canCreate = false;
   try {
-    const { data: pr } = await sb.from("profiles").select("username,avatar_url").eq("id", cloud.user.id).maybeSingle();
+    const { data: pr } = await sb.from("profiles").select("username,avatar_url,can_create").eq("id", cloud.user.id).maybeSingle();
     if (pr && pr.username) cloud.profile.username = pr.username;
     if (pr && pr.avatar_url && !cloud.profile.avatar_url) cloud.profile.avatar_url = pr.avatar_url;
+    cloud.canCreate = !!(pr && pr.can_create);
     await sb.from("profiles").upsert(cloud.profile, { onConflict: "id" });
   } catch (e) {}
   bar("btn-login").style.display = "none"; bar("btn-logout").style.display = ""; bar("login-email").style.display = "none";
@@ -3007,10 +3064,18 @@ async function onAuth(session) {
     localStorage.removeItem("cuesheet-pending-invite");
     const { data, error } = await sb.rpc("claim_invite", { p_token: token });
     if (error || !data) { toast("Inbjudan ogiltig eller förbrukad"); setUrl({}); }
-    else { toast("Du har fått tillgång till produktionen"); await openProject(data); return; }
+    else { toast("Du har fått tillgång till produktionen"); if (await openProject(data)) { hideLanding(); return; } }
   }
   const pid = qs("p") || localStorage.getItem("cuesheet-last-project");
-  if (pid) { const ok = await openProject(pid); if (ok) return; }
+  if (pid) { const ok = await openProject(pid); if (ok) { hideLanding(); return; } }
+  // har användaren tillgång till något alls?
+  const { count } = await sb.from("projects").select("id", { count: "exact", head: true });
+  if (!count && !cloud.canCreate) {
+    document.getElementById("land-user").innerHTML = `Inloggad som <b>${esc(cloud.profile.username)}</b>`;
+    showLanding("noaccess", "Du har ingen produktion ännu. Be kompositören om en inbjudningslänk – när du öppnar den hamnar du direkt i produktionen.");
+    return;
+  }
+  hideLanding();
   openProjects();
 }
 
@@ -3047,16 +3112,17 @@ function loginReturnUrl() {
 function cloudLogin() {
   sb.auth.signInWithOAuth({ provider: "github", options: { redirectTo: loginReturnUrl() } });
 }
-async function cloudLoginEmail() {
-  const el = document.getElementById("otp-email");
+async function cloudLoginEmail(inputId) {
+  const el = document.getElementById(inputId || "otp-email");
   const email = (el.value || "").trim();
   if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) { toast("Skriv en giltig mejladress"); el.focus(); return; }
   const btn = el.nextElementSibling; btn.disabled = true;
   const { error } = await sb.auth.signInWithOtp({ email, options: { emailRedirectTo: loginReturnUrl(), shouldCreateUser: true } });
   btn.disabled = false;
   if (error) { toast("Kunde inte skicka: " + error.message); return; }
-  document.getElementById("cloud-user").innerHTML =
-    `<b>Mejl skickat till ${esc(email)}.</b> <span style="color:var(--muted)">Öppna länken i mejlet så loggas du in. Kolla skräpposten om det dröjer.</span>`;
+  const msg = `<b>Mejl skickat till ${esc(email)}.</b> <span style="color:var(--muted)">Öppna länken i mejlet så loggas du in. Kolla skräpposten om det dröjer.</span>`;
+  document.getElementById("cloud-user").innerHTML = msg;
+  if (document.body.classList.contains("gated")) showLanding("login", msg);
   el.value = "";
   toast("Inloggningslänk skickad");
 }
@@ -3069,6 +3135,7 @@ async function cloudLogout() {
 // ---- Produktioner ----
 async function openProjects() {
   if (!cloud.user) { toast("Logga in först"); return; }
+  document.getElementById("btn-newproj").style.display = cloud.canCreate ? "" : "none";
   document.getElementById("proj-overlay").classList.add("open");
   const el = document.getElementById("proj-list");
   el.innerHTML = `<div class="cm-empty">Hämtar…</div>`;
