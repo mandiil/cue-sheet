@@ -700,7 +700,7 @@ const SUPA = {
     <button onclick="tlZoom(1/1.6)">Zooma ut −</button>
     <button onclick="tlZoomAll()">Allt</button>
     <button id="tl-audd" class="admin-only" onclick="tlAudd()" onmouseenter="tlNeedAudio()" onmouseleave="tlNeedAudio(false)" title="Skickar 12 s av det markerade klippet till AudD (nätet) och visar artist/titel med Spotify-länk">Identifiera (AudD)</button>
-    <label class="inline-check" style="font-size:12px;color:var(--muted)" title="Tidslinjen ligger kvar högst upp medan listan scrollar, och listan scrollar själv till cuen du pekar på"><input type="checkbox" id="tl-pin" onchange="tlPin(this.checked)"><span>Fäst &amp; följ i listan</span></label>
+    <span style="display:inline-flex;align-items:center;gap:5px;white-space:nowrap" title="Tidslinjen ligger kvar högst upp medan listan scrollar, och listan scrollar själv till cuen du pekar på"><input type="checkbox" id="tl-pin" style="width:14px;height:14px;margin:0;flex:none" onchange="tlPin(this.checked)"><label for="tl-pin" style="display:inline;margin:0;font-size:12px;text-transform:none;letter-spacing:0;color:var(--muted);cursor:pointer;white-space:nowrap">Fäst &amp; följ i listan</label></span>
     <button id="tl-open-btn" onclick="document.getElementById('tl-aaf-in').click()" title="Ljudet ligger i AAF-filen och sparas inte i projektet – öppna filen igen för att lyssna">Öppna AAF för ljud…</button>
     <input type="file" id="tl-aaf-in" accept=".aaf" style="display:none" onchange="tlOpenFile(event)">
     <button onclick="toggleTimeline()">Stäng</button>
