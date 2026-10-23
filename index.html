@@ -3153,17 +3153,19 @@ function recMatch() {
       const d = Math.abs(e.tc + offset - r.inF), nameHit = !!nn && recNorm(e.name) === nn;
       if (d <= (nameHit ? tolF * 3 : tolF)) { const s = d - (nameHit ? tolF * 3 : 0); if (s < bestScore) { bestScore = s; best = e; } }
     });
-    if (!best) {
-      // omsynk: större fönster, ordningen bevarad, bekräftas av att nästa klipp också stämmer med den nya förskjutningen
-      const win = Math.max(600 * fv, tolF * 10), next = rows[ri + 1];
+    const fits = (clip, off, skipE) => !clip || ex.some(e2 => e2 !== skipE && !used.has(e2.i) && Math.abs(e2.tc + off - clip.inF) <= tolF);
+    const nexts = rows.slice(ri + 1, ri + 3);
+    if (!best && nexts.length && !fits(nexts[0], offset, null)) {
+      // omsynk (bortklippt/tillagd scen): nästa klipp passar inte heller med nuvarande förskjutning →
+      // sök i större fönster, ordningen bevarad, och kräv att de två följande klippen stämmer med den nya förskjutningen
+      const win = Math.max(600 * fv, tolF * 10);
       let cand = null, candD = Infinity;
       ex.forEach(e => {
         if (used.has(e.i) || e.tc < lastTc) return;
         const d = Math.abs(e.tc + offset - r.inF);
         if (d > win || d >= candD) return;
         const newOff = r.inF - e.tc;
-        const ok = !next || ex.some(e2 => e2 !== e && !used.has(e2.i) && Math.abs(e2.tc + newOff - next.inF) <= tolF);
-        if (ok) { cand = e; candD = d; }
+        if (nexts.every(n => fits(n, newOff, e))) { cand = e; candD = d; }
       });
       best = cand;
     }
@@ -3228,7 +3230,7 @@ function renderRec() {
     } else res = `<b>Ny cue ${esc(r.plannedNo || "")}</b>`;
     return `<tr class="${r.skip ? "unsel" : ""}">
       <td>${i + 1}</td>
-      <td><b>${esc(r.name || "(namnlös)")}</b><br><span style="color:var(--muted);font-family:'SF Mono',Menlo,monospace;font-size:12px">${esc(r.tcIn)}${r.tcOut ? " – " + esc(r.tcOut) : ""}</span></td>
+      <td style="min-width:240px"><b>${esc(r.name || "(namnlös)")}</b><br><span style="color:var(--muted);font-family:'SF Mono',Menlo,monospace;font-size:12px">${esc(r.tcIn)}${r.tcOut ? " – " + esc(r.tcOut) : ""}</span></td>
       <td><select onchange="recSet(${i},parseInt(this.value,10))" ${r.skip ? "disabled" : ""}>${optsHtml(r.match)}</select></td>
       <td>${res}</td>
       <td style="text-align:center"><input type="checkbox" ${r.skip ? "checked" : ""} onchange="recSkip(${i},this.checked)" title="Hoppa över"></td>
