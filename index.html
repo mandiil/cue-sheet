@@ -844,8 +844,8 @@ function applyTemplateMeta() {
 
 // --- Ny cue-sheet (mallväljare) ---
 let tplSel = "film", tplDown = false;
-function openTemplatePicker() {
-  if (sb && cloud.user && !cloud.canCreate) { toast("Ditt konto får inte skapa produktioner"); return; }
+async function openTemplatePicker() {
+  if (sb && cloud.user) { await refreshLevel(); if (!cloud.canCreate) { toast("Du behöver Read & Write i någon produktion för att skapa egna"); return; } }
   tplSel = state.template || "film";
   renderTemplateGrid();
   const inCloud = !!(sb && cloud.user);
@@ -3118,7 +3118,7 @@ async function onAuth(session) {
     localStorage.removeItem("cuesheet-pending-invite");
     const { data, error } = await sb.rpc("claim_invite", { p_token: token });
     if (error || !data) { toast("Inbjudan ogiltig eller förbrukad"); setUrl({}); }
-    else { toast("Du har fått tillgång till produktionen"); if (await openProject(data)) { hideLanding(); return; } }
+    else { toast("Du har fått tillgång till produktionen"); await refreshLevel(); if (await openProject(data)) { hideLanding(); return; } }
   }
   const pid = qs("p") || localStorage.getItem("cuesheet-last-project");
   if (pid) { const ok = await openProject(pid); if (ok) { hideLanding(); return; } }
@@ -3225,8 +3225,15 @@ async function cloudLogout() {
 }
 
 // ---- Produktioner ----
+// Kontonivån kan ändras under sessionen (t.ex. efter inlöst inbjudan som Read & Write) – läs om den
+async function refreshLevel() {
+  if (!sb || !cloud.user) return;
+  const { data: pr } = await sb.from("profiles").select("level").eq("id", cloud.user.id).maybeSingle();
+  if (pr) { cloud.level = pr.level || "user"; cloud.canCreate = cloud.level === "admin" || cloud.level === "superadmin"; }
+}
 async function openProjects() {
   if (!cloud.user) { toast("Logga in först"); return; }
+  await refreshLevel();
   document.getElementById("btn-newproj").style.display = cloud.canCreate ? "" : "none";
   document.getElementById("proj-overlay").classList.add("open");
   const el = document.getElementById("proj-list");
@@ -3442,6 +3449,7 @@ async function reloadMembers() {
   const { data } = await sb.from("members").select("role,user_id,profiles(username,avatar_url)").eq("project_id", cloud.project.id);
   if (data) cloud.members = data;
   // om min egen roll ändrats (eller jag tagits bort) – uppdatera
+  await refreshLevel(); // roll kan ha ändrats → skaparrätt kan ha ändrats
   const mine = cloud.members.find(m => m.user_id === cloud.user.id);
   if (!mine && cloud.project.owner !== cloud.user.id && cloud.level !== "superadmin") { toast("Din åtkomst till produktionen togs bort"); leaveProject(); showLanding("noaccess", "Din åtkomst togs bort."); return; }
   const newRole = projectRole({ owner: cloud.project.owner, members: cloud.members });
