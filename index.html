@@ -110,6 +110,7 @@ const SUPA = {
 
   #detect-panel { display: none; }
   #detect-panel.open { display: block; }
+  #tl-btn:disabled { opacity: 0.35; cursor: not-allowed; }
   #tl-panel { display: none; }
   #tl-panel.open { display: block; }
   #tl-scroll { position: relative; overflow-x: auto; overflow-y: hidden; background: #0f1114; border: 1px solid var(--border); border-radius: 6px; outline: none; }
@@ -674,8 +675,9 @@ const SUPA = {
     <button onclick="setView(3)" data-v="3">View Three</button>
     <button onclick="toggleRecording()" data-v="rec">Recording</button>
   </div>
-  <div style="margin: 8px 0 4px;" class="admin-only">
-    <button class="primary" onclick="addCue()">+ Lägg till cue</button>
+  <div style="margin: 8px 0 4px; display:flex; gap:8px; align-items:center">
+    <button class="primary admin-only" onclick="addCue()">+ Lägg till cue</button>
+    <button id="tl-btn" onclick="toggleTimeline()" disabled title="Importera en AAF så byggs tidslinjen av musikspåren">Tidslinje</button>
   </div>
   <div id="rec-area" style="display:none"></div>
   <div class="table-wrap" id="main-wrap">
@@ -689,7 +691,6 @@ const SUPA = {
 
 <div class="panel toolbar">
   <button class="admin-only" onclick="toggleDetect()">Auto-detektera cuer…</button>
-  <button onclick="toggleTimeline()">Tidslinje</button>
   <button class="admin-only" onclick="toggleArchive()">SongSpot</button>
   <button class="admin-only" onclick="document.getElementById('edl-in').click()">Importera EDL/XML/AAF…</button>
   <input type="file" id="edl-in" accept=".edl,.xml,.txt,.aaf" style="display:none" onchange="importEdlXml(event)">
@@ -1031,6 +1032,7 @@ function render() {
   const recOn = !!state.recActive;
   document.getElementById("main-wrap").style.display = recOn ? "none" : "";
   document.getElementById("rec-area").style.display = recOn ? "block" : "none";
+  try { tlBtn(); } catch (e) {}
   if (recOn) {
     document.getElementById("empty-msg").style.display = "none";
     renderRecording();
@@ -3430,6 +3432,11 @@ function tlU8(b64) { if (!b64) return null; const s = atob(b64), u = new Uint8Ar
 function tlStatus(msg) { document.getElementById("tl-status").textContent = msg || "Klicka i tidslinjen för att flytta spelhuvudet · dubbelklicka på ett klipp för att hoppa till dess cue-rad · shift+scroll panorerar, Cmd/Ctrl+scroll zoomar · mellanslag = spela/paus."; }
 function tlSig() { const t = state.timeline; return t ? t.seq + "|" + t.file + "|" + t.clips.length : ""; }
 function tlOpen() { return document.getElementById("tl-panel").classList.contains("open"); }
+function tlBtn() {
+  const b = document.getElementById("tl-btn"), has = !!(state.timeline && state.timeline.clips && state.timeline.clips.length);
+  b.disabled = !has;
+  b.title = has ? "Visa/dölj tidslinjen med musikklippen" : "Importera en AAF så byggs tidslinjen av musikspåren";
+}
 function tlDur() { const t = state.timeline; if (!t || !t.clips.length) return 60; return Math.max(...t.clips.map(c => c.outF)) / t.fps + 5; }
 function tlLanes() { return Math.max(1, ...tl.clips.map(c => c.lane + 1)); }
 function tlCur() { return tl.playing ? tl.pos0 + (tl.ctx.currentTime - tl.t0) : tl.pos; }
@@ -3444,6 +3451,7 @@ function toggleTimeline() {
   } else tlStop();
 }
 function tlInfo() {
+  tlBtn();
   const t = state.timeline, el = document.getElementById("tl-info");
   if (!t || !t.clips.length) { el.textContent = "Ingen tidslinje ännu."; }
   else el.textContent = `${t.file} · ${t.clips.length} klipp · ${tlLanes()} spår · ${tl.reader ? "ljud laddat" : "inget ljud laddat (öppna AAF-filen för att lyssna)"}`;
@@ -3457,6 +3465,7 @@ function tlFromState() {
   tl.sig = sig; tlStop(); tl.reader = null; tl.pos = 0; tl.sel = -1; tl.hover = -1;
   const t = state.timeline;
   tl.clips = t ? t.clips.map(c => ({ name: c.name, inF: c.inF, outF: c.outF, lane: c.lane, pk: tlU8(c.pk) })) : [];
+  tlBtn();
   if (tlOpen()) { tlResize(); tlZoomAll(); tlDraw(); tlInfo(); }
 }
 // bygg tidslinje + vågformer från en öppnad AAF (c = komposition, tracks = valda spår)
