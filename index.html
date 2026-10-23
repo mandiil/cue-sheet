@@ -695,7 +695,7 @@ const SUPA = {
     <button onclick="tlZoom(1.6)">Zooma in +</button>
     <button onclick="tlZoom(1/1.6)">Zooma ut −</button>
     <button onclick="tlZoomAll()">Allt</button>
-    <button id="tl-audd" class="admin-only" onclick="tlAudd()" title="Skickar 15 s av det markerade klippet till AudD (nätet) och visar artist/titel med Spotify-länk">Identifiera (AudD)</button>
+    <button id="tl-audd" class="admin-only" onclick="tlAudd()" title="Skickar 12 s av det markerade klippet till AudD (nätet) och visar artist/titel med Spotify-länk">Identifiera (AudD)</button>
     <label style="display:flex;align-items:center;gap:5px;font-size:12px;color:var(--muted);cursor:pointer" title="Tidslinjen ligger kvar högst upp medan listan scrollar, och listan scrollar själv till cuen du pekar på"><input type="checkbox" id="tl-pin" onchange="tlPin(this.checked)"> Fäst &amp; följ i listan</label>
     <button id="tl-open-btn" onclick="document.getElementById('tl-aaf-in').click()" title="Ljudet ligger i AAF-filen och sparas inte i projektet – öppna filen igen för att lyssna">Öppna AAF för ljud…</button>
     <input type="file" id="tl-aaf-in" accept=".aaf" style="display:none" onchange="tlOpenFile(event)">
@@ -2408,7 +2408,7 @@ function renderDetected() {
       <td style="white-space:nowrap">
         ${i > 0 ? `<button class="icon" title="Slå ihop med föregående cue (${i})" onclick="mergeWithPrev(${i})">⤒ slå ihop med ${i}</button>` : ""}
         <button class="icon" title="Markera/avmarkera för ihopslagning (samma som shift-klick i vågformen)" onclick="toggleMark(${i})">${r.mark ? "avmarkera" : "markera"}</button>
-        ${sb && cloud.user ? `<button class="icon" title="Identifiera via AudD (nätet, 15 s ur cuen)" onclick="detAudd(${i})">AudD</button>` : ""}
+        ${sb && cloud.user ? `<button class="icon" title="Identifiera via AudD (nätet, 12 s ur cuen)" onclick="detAudd(${i})">AudD</button>` : ""}
       </td>
     </tr>`).join("") +
     `</tbody></table>
@@ -3322,12 +3322,12 @@ function showAudd(res, hit, onUse, sub) {
 }
 function closeAudd() { document.getElementById("audd-overlay").classList.remove("open"); }
 function auddUse() { if (auddCur && auddCur.onUse) auddCur.onUse(auddCur.hit); closeAudd(); }
-// Tidslinje: 15 s ur det markerade klippet (en bit in i klippet, för att slippa fade-in)
+// Tidslinje: 12 s ur det markerade klippet (AudD rekommenderar 2–12 s) (en bit in i klippet, för att slippa fade-in)
 async function tlAudd() {
   if (tl.sel < 0) { toast("Klicka på ett klipp i tidslinjen först"); return; }
   const c = tl.clips[tl.sel];
   if (!tl.reader || !c.chans || !c.chans.length) { toast("Ljudet ligger i AAF-filen – öppna den först (Öppna AAF för ljud…)"); return; }
-  const ch = c.chans[0], total = Math.floor((c.outF - c.inF) / state.timeline.fps * ch.sr), n = Math.min(15 * ch.sr, total);
+  const ch = c.chans[0], total = Math.floor((c.outF - c.inF) / state.timeline.fps * ch.sr), n = Math.min(12 * ch.sr, total);
   const from = total > n ? Math.floor((total - n) * 0.35) : 0;
   const btn = document.getElementById("tl-audd"); btn.disabled = true; tlStatus("Frågar AudD…");
   try {
@@ -3339,7 +3339,7 @@ async function tlAudd() {
   } catch (e) { toast(String(e.message || e)); }
   btn.disabled = false; tlStatus("");
 }
-// Auto-detektering: 15 s ur region i
+// Auto-detektering: 12 s ur region i
 let detMonoCache = null;
 async function detAudd(i) {
   const r = detected[i]; if (!r || !detFile) return;
@@ -3347,7 +3347,7 @@ async function detAudd(i) {
   try {
     if (!detMonoCache || detMonoCache.file !== detFile) { const m = await fpGetMono(detFile, "Mixdown"); detMonoCache = { file: detFile, samples: m.samples, sr: m.sr }; }
     const { samples, sr } = detMonoCache;
-    const a = Math.floor(r.start * sr), b = Math.min(samples.length, Math.floor(r.end * sr)), total = b - a, n = Math.min(15 * sr, total);
+    const a = Math.floor(r.start * sr), b = Math.min(samples.length, Math.floor(r.end * sr)), total = b - a, n = Math.min(12 * sr, total);
     const from = a + (total > n ? Math.floor((total - n) * 0.35) : 0);
     const res = await auddLookup(samples.subarray(from, from + n), sr), hit = auddPick(res);
     showAudd(res, hit, hit ? (h => { r.audd = h; renderDetected(); }) : null, `cue ${i + 1} · ${secToTC(r.start)}`);
