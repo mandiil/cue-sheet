@@ -527,6 +527,27 @@ const SUPA = {
 </div>
 <div id="print-area"></div>
 
+<!-- AAF-import: välj spår -->
+<div id="aaf-overlay" class="overlay" onmousedown="aafDown=(event.target===this)" onmouseup="if(aafDown&&event.target===this)closeAaf();aafDown=false">
+  <div class="cm-box" role="dialog" aria-modal="true" style="max-width:620px">
+    <div class="cm-head"><b>Importera AAF</b><span class="cm-sub" id="aaf-sub"></span></div>
+    <div class="cm-input" id="aaf-seq-wrap" style="display:none">
+      <label>Sekvens</label>
+      <select id="aaf-seq" onchange="renderAafTracks()"></select>
+    </div>
+    <div class="col-hint" style="padding:6px 18px 0">Välj vilka spår som är musik. Spår vars namn innehåller Music/MX/Score är förvalda.</div>
+    <div id="aaf-tracks" style="padding:8px 18px;max-height:46vh;overflow:auto"></div>
+    <div class="col-hint" style="padding:0 18px 10px">
+      <label style="display:flex;gap:8px;align-items:center;cursor:pointer"><input type="checkbox" id="aaf-merge" checked> Slå ihop angränsande klipp med samma namn (t.ex. klipp som är delade vid en bildklippning)</label>
+    </div>
+    <div class="cm-foot">
+      <button class="primary" onclick="confirmAaf()">Importera</button>
+      <div class="spacer"></div>
+      <button onclick="closeAaf()">Avbryt</button>
+    </div>
+  </div>
+</div>
+
 <!-- Mallväljare (Ny cue-sheet) -->
 <div id="tpl-overlay" class="overlay" onmousedown="tplDown=(event.target===this)" onmouseup="if(tplDown&&event.target===this)closeTemplatePicker();tplDown=false">
   <div class="cm-box" role="dialog" aria-modal="true" style="max-width:520px">
@@ -641,8 +662,8 @@ const SUPA = {
 <div class="panel toolbar">
   <button class="admin-only" onclick="toggleDetect()">Auto-detektera cuer…</button>
   <button class="admin-only" onclick="toggleArchive()">SongSpot</button>
-  <button class="admin-only" onclick="document.getElementById('edl-in').click()">Importera EDL/XML…</button>
-  <input type="file" id="edl-in" accept=".edl,.xml,.txt" style="display:none" onchange="importEdlXml(event)">
+  <button class="admin-only" onclick="document.getElementById('edl-in').click()">Importera EDL/XML/AAF…</button>
+  <input type="file" id="edl-in" accept=".edl,.xml,.txt,.aaf" style="display:none" onchange="importEdlXml(event)">
   <button class="admin-only" onclick="toggleCols()">Kolumner…</button>
   <button class="admin-only danger" onclick="clearCues()">Rensa cuer</button>
   <div class="spacer"></div>
@@ -2927,6 +2948,7 @@ async function archiveClear() {
 function importEdlXml(ev) {
   const file = ev.target.files[0];
   if (!file) return;
+  if (/\.aaf$/i.test(file.name)) { ev.target.value = ""; importAaf(file); return; }
   const r = new FileReader();
   r.onload = () => {
     try {
@@ -3013,6 +3035,265 @@ function parseXmeml(text) {
   out.sort((a, b) => (parseTC(a.tcIn, tb) || 0) - (parseTC(b.tcIn, tb) || 0));
   if (tb !== fps()) toast(`Obs: XML-filen är ${tb} fps, projektet ${fps()} fps`);
   return out;
+}
+
+// ---------- AAF-import (Avid Media Composer) ----------
+// AAF är en CFB/OLE2-behållare. Vi läser bara katalogen, FAT:en och ministreamen
+// (några MB) via File.slice – aldrig hela filen, så GB-stora AAF:er går fint.
+function aafUtf16(a) {
+  let s = "";
+  for (let i = 0; i + 1 < a.length; i += 2) { const c = a[i] | (a[i + 1] << 8); if (!c) break; s += String.fromCharCode(c); }
+  return s;
+}
+function aafHex(a) { return Array.from(a, x => x.toString(16).padStart(2, "0")).join(""); }
+function aafAuid(b) {
+  if (!b || b.length < 16) return "";
+  const D = new DataView(b.buffer, b.byteOffset, b.byteLength);
+  const hx = (n, w) => n.toString(16).padStart(w, "0");
+  return hx(D.getUint32(0, true), 8) + "-" + hx(D.getUint16(4, true), 4) + "-" + hx(D.getUint16(6, true), 4) + "-" + aafHex(b.subarray(8, 10)) + "-" + aafHex(b.subarray(10, 16));
+}
+function aafInt(a) {
+  if (!a || !a.length) return 0;
+  const D = new DataView(a.buffer, a.byteOffset, a.byteLength);
+  if (a.length >= 8) return Number(D.getBigInt64(0, true));
+  if (a.length >= 4) return D.getInt32(0, true);
+  if (a.length >= 2) return D.getInt16(0, true);
+  return a[0];
+}
+
+class AafReader {
+  constructor(file) { this.file = file; this.fatCache = new Map(); this.mobs = {}; }
+  async read(off, len) { return new Uint8Array(await this.file.slice(off, off + len).arrayBuffer()); }
+  sector(n) { return this.read((n + 1) * this.ssz, this.ssz); }
+  async fat(n) {
+    const per = this.ssz / 4, idx = Math.floor(n / per);
+    if (!this.fatCache.has(idx)) {
+      if (idx >= this.fatSectors.length) throw new Error("trasig FAT");
+      const s = await this.sector(this.fatSectors[idx]);
+      this.fatCache.set(idx, new DataView(s.buffer, s.byteOffset, s.byteLength));
+    }
+    return this.fatCache.get(idx).getUint32((n % per) * 4, true);
+  }
+  async chain(start) { const out = []; let n = start; while (n < 0xFFFFFFFA && out.length < 4e6) { out.push(n); n = await this.fat(n); } return out; }
+  async readChain(ch) { // läser sammanhängande sektorer i ett svep
+    const out = new Uint8Array(ch.length * this.ssz); let i = 0, o = 0;
+    while (i < ch.length) {
+      let j = i; while (j + 1 < ch.length && ch[j + 1] === ch[j] + 1) j++;
+      const buf = await this.read((ch[i] + 1) * this.ssz, (j - i + 1) * this.ssz);
+      out.set(buf, o); o += buf.length; i = j + 1;
+    }
+    return out;
+  }
+  async open() {
+    const h = await this.read(0, 512), H = new DataView(h.buffer);
+    if (h.length < 512 || H.getUint32(0, true) !== 0xe011cfd0 || H.getUint32(4, true) !== 0xe11ab1a1) throw new Error("inte en AAF-fil (fel filhuvud)");
+    this.ssz = 1 << H.getUint16(30, true); this.mssz = 1 << H.getUint16(32, true);
+    const nFat = H.getUint32(44, true), dirStart = H.getUint32(48, true);
+    this.miniCutoff = H.getUint32(56, true);
+    const miniFatStart = H.getUint32(60, true), nMiniFat = H.getUint32(64, true);
+    let nxt = H.getUint32(68, true); const nDifat = H.getUint32(72, true);
+    const difat = []; for (let i = 0; i < 109; i++) difat.push(H.getUint32(76 + i * 4, true));
+    const per = this.ssz / 4;
+    for (let i = 0; i < nDifat && nxt < 0xFFFFFFFA; i++) {
+      const s = await this.sector(nxt), D = new DataView(s.buffer, s.byteOffset, s.byteLength);
+      for (let j = 0; j < per - 1; j++) difat.push(D.getUint32(j * 4, true));
+      nxt = D.getUint32((per - 1) * 4, true);
+    }
+    this.fatSectors = difat.slice(0, nFat);
+    const raw = await this.readChain(await this.chain(dirStart)), D = new DataView(raw.buffer);
+    this.dir = [];
+    for (let e = 0; e + 128 <= raw.length; e += 128) {
+      const nlen = D.getUint16(e + 64, true);
+      this.dir.push({ name: nlen > 2 ? aafUtf16(raw.subarray(e, e + nlen - 2)) : "", type: raw[e + 66],
+        left: D.getUint32(e + 68, true), right: D.getUint32(e + 72, true), child: D.getUint32(e + 76, true),
+        clsid: raw.slice(e + 80, e + 96), start: D.getUint32(e + 116, true), size: Number(D.getBigUint64(e + 120, true)) });
+    }
+    if (!this.dir.length) throw new Error("tom katalog");
+    this.mini = this.dir[0].size ? await this.readChain(await this.chain(this.dir[0].start)) : new Uint8Array(0);
+    this.miniFat = nMiniFat ? await this.readChain(await this.chain(miniFatStart)) : new Uint8Array(0);
+    this.classNames = await this.loadClassNames();
+  }
+  async stream(ent) {
+    if (!ent || !ent.size) return new Uint8Array(0);
+    if (ent.size < this.miniCutoff) {
+      const out = new Uint8Array(ent.size), MF = new DataView(this.miniFat.buffer);
+      let n = ent.start, o = 0;
+      while (n < 0xFFFFFFFA && o < ent.size) {
+        const take = Math.min(this.mssz, ent.size - o);
+        out.set(this.mini.subarray(n * this.mssz, n * this.mssz + take), o);
+        o += take; n = MF.getUint32(n * 4, true);
+      }
+      return out;
+    }
+    return (await this.readChain(await this.chain(ent.start))).subarray(0, ent.size);
+  }
+  children(ent) {
+    if (ent.kids) return ent.kids;
+    const res = [], dir = this.dir;
+    const walk = i => { if (i >= 0xFFFFFFFA || i >= dir.length) return; const e = dir[i]; walk(e.left); res.push(e); walk(e.right); };
+    walk(ent.child);
+    return ent.kids = res;
+  }
+  find(ent, name) { return ent ? this.children(ent).find(k => k.name === name) : null; }
+  vec(ent, base) {
+    const p = base + "{";
+    return this.children(ent).filter(k => k.name.startsWith(p)).sort((a, b) => parseInt(a.name.slice(p.length), 16) - parseInt(b.name.slice(p.length), 16));
+  }
+  async props(ent) {
+    if (ent.props) return ent.props;
+    const raw = await this.stream(this.find(ent, "properties")), P = {};
+    if (raw.length >= 4) {
+      const D = new DataView(raw.buffer, raw.byteOffset, raw.byteLength), n = D.getUint16(2, true), ents = [];
+      let off = 4;
+      for (let i = 0; i < n && off + 6 <= raw.length; i++) { ents.push([D.getUint16(off, true), D.getUint16(off + 2, true), D.getUint16(off + 4, true)]); off += 6; }
+      for (const [pid, sf, len] of ents) { P[pid] = { sf, v: raw.subarray(off, off + len) }; off += len; }
+    }
+    return ent.props = P;
+  }
+  ref(ent, p, pid) { return p[pid] ? this.find(ent, aafUtf16(p[pid].v)) : null; }
+  cls(ent) { return ent ? (this.classNames[aafAuid(ent.clsid)] || "") : ""; }
+  async loadClassNames() {
+    const out = {}, md = this.find(this.dir[0], "MetaDictionary-1");
+    if (!md) throw new Error("ingen MetaDictionary – är det verkligen en AAF?");
+    for (const k of this.vec(md, "ClassDefinitions-3")) {
+      const p = await this.props(k);
+      if (p[5] && p[6]) out[aafAuid(p[5].v)] = aafUtf16(p[6].v);
+    }
+    return out;
+  }
+  // första SourceClip nedåt i ett segment (effekter/Selector/nästlade sekvenser)
+  async firstClip(ent, depth = 0) {
+    if (!ent || depth > 12) return null;
+    const k = this.cls(ent), p = await this.props(ent);
+    if (k === "SourceClip") return p;
+    if (k === "OperationGroup") {
+      for (const ch of this.vec(ent, "InputSegments-b02")) { const r = await this.firstClip(ch, depth + 1); if (r) return r; }
+    } else if (k === "Selector") {
+      return this.firstClip(this.ref(ent, p, 0xf02), depth + 1);
+    } else if (k === "Sequence") {
+      for (const ch of this.vec(ent, "Components-1001")) { if (this.cls(ch) !== "Filler") { const r = await this.firstClip(ch, depth + 1); if (r) return r; } }
+    }
+    return null;
+  }
+  // går igenom ett spårs sekvens → [{pos, len, name}] i spårets edit units
+  async clips(seg) {
+    while (this.cls(seg) === "OperationGroup") { const ins = this.vec(seg, "InputSegments-b02"); if (!ins.length) break; seg = ins[0]; }
+    const comps = this.cls(seg) === "Sequence" ? this.vec(seg, "Components-1001") : [seg];
+    const res = []; let pos = 0;
+    for (const ch of comps) {
+      const k = this.cls(ch), p = await this.props(ch), len = p[0x202] ? aafInt(p[0x202].v) : 0;
+      if (k === "Transition") { pos -= len; continue; } // övergångar överlappar
+      if (k !== "Filler") {
+        const cp = await this.firstClip(ch);
+        if (cp) {
+          const m = cp[0x1101] ? this.mobs[aafHex(cp[0x1101].v)] : null;
+          if (m && !/^(TONE:|Filler$)/i.test(m.name)) res.push({ pos, len, name: m.name });
+        }
+      }
+      pos += len;
+    }
+    return res;
+  }
+  async compositions() {
+    const h = this.find(this.dir[0], "Header-2"), ct = this.find(h, "Content-3b03");
+    if (!ct) throw new Error("hittar inget innehåll (Header/Content)");
+    const comps = [];
+    for (const m of this.vec(ct, "Mobs-1901")) {
+      const p = await this.props(m);
+      if (!p[0x4401]) continue;
+      const kind = this.cls(m), name = p[0x4402] ? aafUtf16(p[0x4402].v) : "";
+      this.mobs[aafHex(p[0x4401].v)] = { kind, name };
+      if (kind === "CompositionMob") comps.push({ ent: m, name });
+    }
+    const out = [];
+    for (const c of comps) {
+      let start = 0, tcFps = 0; const tracks = [];
+      for (const s of this.vec(c.ent, "Slots-4403")) {
+        const p = await this.props(s), seg = this.ref(s, p, 0x4803);
+        if (!seg) continue;
+        const k = this.cls(seg);
+        if (k === "Timecode") { const sp = await this.props(seg); if (!tcFps && sp[0x1501] && sp[0x1502]) { start = aafInt(sp[0x1501].v); tcFps = aafInt(sp[0x1502].v); } continue; }
+        if (this.cls(s) !== "TimelineMobSlot" || !["Sequence", "OperationGroup", "SourceClip", "Selector"].includes(k)) continue;
+        let rate = 25;
+        if (p[0x4b01] && p[0x4b01].v.length >= 8) { const D = new DataView(p[0x4b01].v.buffer, p[0x4b01].v.byteOffset, 8); rate = D.getInt32(0, true) / (D.getInt32(4, true) || 1); }
+        const clips = await this.clips(seg);
+        if (clips.length) tracks.push({ id: p[0x4801] ? aafInt(p[0x4801].v) : 0, name: p[0x4802] ? aafUtf16(p[0x4802].v) : "", rate, clips });
+      }
+      if (tracks.length) out.push({ name: c.name, start, fps: tcFps || 25, tracks });
+    }
+    return out;
+  }
+}
+
+let aafData = null, aafFileName = "", aafDown = false;
+async function importAaf(file) {
+  toast("Läser AAF…");
+  try {
+    const r = new AafReader(file);
+    await r.open();
+    const comps = await r.compositions();
+    if (!comps.length) { toast("Inga sekvenser med klipp hittades i AAF-filen"); return; }
+    // mest troliga sekvens först: samma namn som filen, annars flest klipp
+    const stem = file.name.replace(/\.aaf$/i, "").toLowerCase();
+    const n = c => c.tracks.reduce((a, t) => a + t.clips.length, 0);
+    comps.sort((a, b) => (b.name.toLowerCase().startsWith(stem) - a.name.toLowerCase().startsWith(stem)) || (n(b) - n(a)));
+    aafData = comps; aafFileName = file.name;
+    const sel = document.getElementById("aaf-seq");
+    sel.innerHTML = comps.map((c, i) => `<option value="${i}">${esc(c.name || "(namnlös)")} – ${n(c)} klipp</option>`).join("");
+    document.getElementById("aaf-seq-wrap").style.display = comps.length > 1 ? "" : "none";
+    document.getElementById("aaf-sub").textContent = file.name;
+    renderAafTracks();
+    document.getElementById("aaf-overlay").classList.add("open");
+  } catch (e) { console.error(e); toast("Kunde inte läsa AAF: " + (e.message || e)); }
+}
+function aafClipName(name) { return name.replace(/\.(wav|aif|aiff|mp3|m4a|flac|ogg|mxf|mov|mp4|wma)$/i, ""); }
+function aafTC(c, t, units) { return fmtTC(c.start + Math.round(units / t.rate * c.fps), c.fps); }
+function renderAafTracks() {
+  const c = aafData[parseInt(document.getElementById("aaf-seq").value || "0", 10)];
+  const isMusic = t => /mus|mx\b|score|^m\d/i.test(t.name);
+  document.getElementById("aaf-tracks").innerHTML = c.tracks.map((t, i) => {
+    const ex = t.clips.slice(0, 3).map(x => esc(aafClipName(x.name))).join(", ") + (t.clips.length > 3 ? "…" : "");
+    return `<label style="display:flex;gap:10px;align-items:flex-start;padding:6px 0;border-bottom:1px solid var(--border);cursor:pointer">
+      <input type="checkbox" data-track="${i}" ${isMusic(t) ? "checked" : ""} style="margin-top:3px">
+      <span><b>${esc(t.name || ("Spår " + t.id))}</b> <span style="color:var(--muted)">· ${t.clips.length} klipp · från ${aafTC(c, t, t.clips[0].pos)}</span><br><span style="color:var(--muted);font-size:12px">${ex}</span></span></label>`;
+  }).join("");
+}
+function closeAaf() { document.getElementById("aaf-overlay").classList.remove("open"); }
+function confirmAaf() {
+  const c = aafData[parseInt(document.getElementById("aaf-seq").value || "0", 10)];
+  const merge = document.getElementById("aaf-merge").checked;
+  const picked = [...document.querySelectorAll("#aaf-tracks input[data-track]:checked")].map(x => c.tracks[parseInt(x.dataset.track, 10)]);
+  if (!picked.length) { toast("Välj minst ett spår"); return; }
+  const rows = [];
+  picked.forEach(t => {
+    const cl = [...t.clips].sort((a, b) => a.pos - b.pos);
+    let cur = null;
+    cl.forEach(x => {
+      const name = aafClipName(x.name), inF = Math.round(x.pos / t.rate * c.fps), outF = Math.round((x.pos + x.len) / t.rate * c.fps);
+      if (merge && cur && cur.name === name && inF <= cur.outF + 2) { cur.outF = Math.max(cur.outF, outF); return; }
+      cur = { name, inF, outF, track: t.name };
+      rows.push(cur);
+    });
+  });
+  rows.sort((a, b) => a.inF - b.inF);
+  const seen = new Set();
+  const clips = rows.filter(r => { const k = r.name + "|" + r.inF; if (seen.has(k)) return false; seen.add(k); return true; });
+  if (!clips.length) { toast("Inga klipp på valda spår"); return; }
+  closeAaf();
+  snapshot("före AAF-import", true);
+  clips.forEach(r => {
+    const f = {
+      no: nextNo(),
+      filename: r.name,
+      tc: fmtTC(c.start + r.inF, c.fps),
+      comments: `Import ${esc(aafFileName)} · slut ${fmtTC(c.start + r.outF, c.fps)}` + (r.track ? ` · ${esc(r.track)}` : "")
+    };
+    if (state.columns.some(col => col.id === "filmcut")) f.filmcut = state.meta.cut || "";
+    state.cues.push({ f });
+  });
+  render();
+  toast(`${clips.length} musikklipp importerade från ${aafFileName}`);
+  if (c.fps !== fps()) toast(`Obs: AAF-filen är ${c.fps} fps, projektet ${fps()} fps`);
 }
 
 function exportXlsx() {
