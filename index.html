@@ -189,6 +189,7 @@ const SUPA = {
   .proj-row .muted { color: var(--muted); font-size: 12px; }
   .inv-link { font-family: "SF Mono", Menlo, monospace; font-size: 12px; word-break: break-all; background: var(--panel2); padding: 8px 10px; border-radius: 6px; margin: 6px 0; }
   img.avatar { width: 22px; height: 22px; border-radius: 50%; vertical-align: middle; margin-right: 6px; }
+  .avatar-ini { display: inline-flex; width: 22px; height: 22px; border-radius: 50%; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; color: #fff; margin-right: 6px; vertical-align: middle; }
   .toolbar .spacer { flex: 1; }
   .totals { color: var(--muted); font-size: 13px; text-align: right; }
   .totals b { color: var(--text); }
@@ -369,7 +370,7 @@ const SUPA = {
     <button onclick="cloudLoginEmail()">Skicka inloggningslänk</button>
   </span>
   <button id="btn-projects" style="display:none" onclick="openProjects()">Produktioner…</button>
-  <button id="btn-invite" class="admin-only" style="display:none" onclick="openInvite()">Bjud in…</button>
+  <button id="btn-invite" style="display:none" onclick="openInvite()">Bjud in…</button>
   <button id="btn-accounts" style="display:none" onclick="openAccounts()">Konton…</button>
   <span id="cloud-proj" class="totals" style="text-align:left"></span>
   <div class="spacer"></div>
@@ -409,12 +410,14 @@ const SUPA = {
 <!-- Bjud in / medlemmar -->
 <div id="inv-overlay" class="overlay" onmousedown="invDown=(event.target===this)" onmouseup="if(invDown&&event.target===this)closeInvite();invDown=false">
   <div class="cm-box" role="dialog" aria-modal="true" style="max-width:640px">
-    <div class="cm-head"><b>Bjud in · medlemmar</b><span class="cm-sub" id="inv-sub"></span></div>
+    <div class="cm-head"><b id="inv-title">Bjud in · medlemmar</b><span class="cm-sub" id="inv-sub"></span></div>
     <div class="cm-thread" id="inv-body"></div>
     <div class="cm-foot" style="flex-wrap:wrap">
-      <button class="primary" onclick="createInvite('commenter')">Länk: Read &amp; Comment</button>
-      <button onclick="createInvite('editor')">Länk: Read &amp; Write</button>
-      <button onclick="createInvite('admin')">Länk: Admin</button>
+      <span id="inv-foot-mgr" style="display:contents">
+        <button class="primary" onclick="createInvite('commenter')">Länk: Read &amp; Comment</button>
+        <button onclick="createInvite('editor')">Länk: Read &amp; Write</button>
+        <button onclick="createInvite('admin')">Länk: Admin</button>
+      </span>
       <div class="spacer"></div>
       <button onclick="closeInvite()">Stäng</button>
     </div>
@@ -424,10 +427,10 @@ const SUPA = {
 <!-- Konton (superadmin) -->
 <div id="acc-overlay" class="overlay" onmousedown="accDown=(event.target===this)" onmouseup="if(accDown&&event.target===this)closeAccounts();accDown=false">
   <div class="cm-box" role="dialog" aria-modal="true" style="max-width:640px">
-    <div class="cm-head"><b>Konton</b><span class="cm-sub">Kontonivå styr vem som får skapa produktioner</span></div>
+    <div class="cm-head"><b>Konton</b><span class="cm-sub">alla som loggat in</span></div>
     <div class="cm-thread" id="acc-list"></div>
     <div class="col-hint" style="padding:0 18px 12px">
-      <b>Användare</b> ser bara produktioner de bjudits in till · <b>Admin</b> kan dessutom skapa egna produktioner och bjuda in till dem · <b>Superadmin</b> ser alla produktioner och hanterar konton.
+      Alla ser bara produktioner de bjudits in till. Den som <b>får skapa produktioner</b> kan dessutom starta egna och bjuda in till dem. Roller inom en produktion (Admin / Read &amp; Write / Read &amp; Comment) sätts under Bjud in… i respektive produktion.
     </div>
     <div class="cm-foot"><div class="spacer"></div><button onclick="closeAccounts()">Stäng</button></div>
   </div>
@@ -3105,9 +3108,8 @@ async function onAuth(session) {
 }
 
 function renderUserName() {
-  const lvl = cloud.level === "superadmin" ? ` <span class="role-pill superadmin">Superadmin</span>` : "";
-  document.getElementById("cloud-user").innerHTML =
-    `${cloud.profile.avatar_url ? `<img class="avatar" src="${esc(cloud.profile.avatar_url)}">` : ""}` +
+  const lvl = cloud.level === "superadmin" ? ` <span class="role-pill admin" title="Ser alla produktioner och hanterar konton">Admin</span>` : "";
+  document.getElementById("cloud-user").innerHTML = avatarHtml(cloud.profile) +
     `<b style="cursor:pointer" title="Klicka för att ändra visningsnamn" onclick="askDisplayName(false)">${esc(cloud.profile.username)}</b>${lvl}`;
 }
 function askDisplayName(required) {
@@ -3227,9 +3229,15 @@ async function openProject(id) {
   applyRole();
   subscribeProject(p.id);
   document.getElementById("cloud-proj").innerHTML = `· <b>${esc(p.name)}</b> <span class="role-pill ${role}">${ROLE_LABEL[role]}</span>`;
-  document.getElementById("btn-invite").style.display = isManager() ? "" : "none";
+  updateInviteBtn();
   cstatus("synkad");
   return true;
+}
+function updateInviteBtn() {
+  const b = document.getElementById("btn-invite");
+  b.style.display = cloudActive() ? "" : "none";
+  b.textContent = isManager() ? "Bjud in…" : "Medlemmar";
+  b.classList.toggle("admin-only", false);
 }
 function leaveProject() {
   if (cloud.chan) { try { sb.removeChannel(cloud.chan); } catch (e) {} cloud.chan = null; }
@@ -3371,12 +3379,15 @@ async function reloadMembers() {
   const mine = cloud.members.find(m => m.user_id === cloud.user.id);
   if (!mine && cloud.project.owner !== cloud.user.id && cloud.level !== "superadmin") { toast("Din åtkomst till produktionen togs bort"); leaveProject(); showLanding("noaccess", "Din åtkomst togs bort."); return; }
   const newRole = projectRole({ owner: cloud.project.owner, members: cloud.members });
-  if (newRole !== role) { role = newRole; applyRole(); document.getElementById("cloud-proj").innerHTML = `· <b>${esc(cloud.project.name)}</b> <span class="role-pill ${role}">${ROLE_LABEL[role]}</span>`; document.getElementById("btn-invite").style.display = isManager() ? "" : "none"; toast("Din roll är nu " + ROLE_LABEL[role]); }
+  if (newRole !== role) { role = newRole; applyRole(); document.getElementById("cloud-proj").innerHTML = `· <b>${esc(cloud.project.name)}</b> <span class="role-pill ${role}">${ROLE_LABEL[role]}</span>`; updateInviteBtn(); toast("Din roll är nu " + ROLE_LABEL[role]); }
 }
 
 // ---- Inbjudningar & medlemmar ----
 async function openInvite() {
-  if (!cloudActive() || !isManager()) return;
+  if (!cloudActive()) return;
+  const mgr = isManager();
+  document.getElementById("inv-title").textContent = mgr ? "Bjud in · medlemmar" : "Medlemmar";
+  document.getElementById("inv-foot-mgr").style.display = mgr ? "" : "none";
   document.getElementById("inv-overlay").classList.add("open");
   document.getElementById("inv-sub").textContent = cloud.project.name;
   await renderInvite();
@@ -3385,11 +3396,20 @@ function closeInvite() { document.getElementById("inv-overlay").classList.remove
 async function renderInvite(newLink) {
   const el = document.getElementById("inv-body");
   const pid = cloud.project.id;
+  const mgr = isManager();
   const [{ data: mem }, { data: inv }] = await Promise.all([
     sb.from("members").select("user_id,role,profiles(username,avatar_url)").eq("project_id", pid),
-    sb.from("invites").select("token,role,created_at,expires_at,used_by").eq("project_id", pid).is("used_by", null).order("created_at", { ascending: false })
+    mgr ? sb.from("invites").select("token,role,created_at,expires_at,used_by").eq("project_id", pid).is("used_by", null).order("created_at", { ascending: false }) : Promise.resolve({ data: [] })
   ]);
   cloud.members = mem || [];
+  if (!mgr) {
+    el.innerHTML = `<label>Medlemmar i produktionen</label>` + cloud.members.map(m => {
+      const pr = m.profiles || {}; const isOwner = m.user_id === cloud.project.owner;
+      return `<div class="proj-row">${avatarHtml(pr)}<b>${esc(pr.username || "?")}</b>
+        <span class="role-pill ${m.role}">${ROLE_LABEL[m.role] || m.role}</span>${isOwner ? `<span class="muted">ägare</span>` : ""}${m.user_id === cloud.user.id ? `<span class="muted">(du)</span>` : ""}</div>`;
+    }).join("");
+    return;
+  }
   let h = "";
   if (newLink) h += `<div class="col-hint" style="margin-bottom:4px">Ny inbjudningslänk – skicka den till personen:</div>
     <div class="inv-link" id="inv-newlink">${esc(newLink)}</div>
@@ -3401,7 +3421,7 @@ async function renderInvite(newLink) {
       `<select style="width:auto" onchange="setMemberRole('${m.user_id}',this.value)">${
         ["admin", "editor", "commenter"].map(r => `<option value="${r}" ${m.role === r ? "selected" : ""}>${ROLE_LABEL[r]}</option>`).join("")}</select>`;
     return `<div class="proj-row">
-      ${pr.avatar_url ? `<img class="avatar" src="${esc(pr.avatar_url)}">` : ""}<b>${esc(pr.username || m.user_id.slice(0, 8))}</b>
+      ${avatarHtml(pr)}<b>${esc(pr.username || m.user_id.slice(0, 8))}</b>${m.user_id === cloud.user.id ? `<span class="muted">(du)</span>` : ""}
       ${roleSel}
       <div class="spacer" style="flex:1"></div>
       ${isOwner ? "" : `<button class="icon del" title="Ta bort åtkomst" onclick="removeMember('${m.user_id}')">✕</button>`}
@@ -3451,13 +3471,25 @@ async function openAccounts() {
   el.innerHTML = `<div class="cm-empty">Hämtar…</div>`;
   const { data, error } = await sb.from("profiles").select("id,username,avatar_url,level,updated_at").order("username");
   if (error) { el.innerHTML = `<div class="cm-empty">${esc(error.message)}</div>`; return; }
-  el.innerHTML = (data || []).map(p => `<div class="proj-row">
-      ${p.avatar_url ? `<img class="avatar" src="${esc(p.avatar_url)}">` : ""}<b>${esc(p.username || p.id.slice(0, 8))}</b>
-      ${p.id === cloud.user.id ? `<span class="muted">(du)</span>` : ""}
+  el.innerHTML = (data || []).map(p => {
+    const me = p.id === cloud.user.id, sup = p.level === "superadmin";
+    const can = p.level === "admin" || sup;
+    return `<div class="proj-row">
+      ${avatarHtml(p)}<b>${esc(p.username || p.id.slice(0, 8))}</b>
+      ${me ? `<span class="muted">(du)</span>` : ""}${sup && !me ? `<span class="role-pill admin" title="Ser alla produktioner och hanterar konton">Admin</span>` : ""}
       <div class="spacer" style="flex:1"></div>
-      <select style="width:auto" ${p.id === cloud.user.id ? "disabled" : ""} onchange="setLevel('${p.id}',this.value)">${
-        ["user", "admin", "superadmin"].map(l => `<option value="${l}" ${(p.level || "user") === l ? "selected" : ""}>${LEVEL_LABEL[l]}</option>`).join("")}</select>
-    </div>`).join("") || `<div class="cm-empty">Inga konton.</div>`;
+      <label style="display:flex;align-items:center;gap:6px;margin:0;text-transform:none;letter-spacing:0;font-size:13px;cursor:pointer">
+        <input type="checkbox" style="width:16px;height:16px;accent-color:var(--accent)" ${can ? "checked" : ""} ${me || sup ? "disabled" : ""}
+          onchange="setLevel('${p.id}',this.checked?'admin':'user')">får skapa produktioner</label>
+    </div>`;
+  }).join("") || `<div class="cm-empty">Inga konton.</div>`;
+}
+// Profilbild eller initial i en färgad cirkel
+function avatarHtml(p) {
+  if (p.avatar_url) return `<img class="avatar" src="${esc(p.avatar_url)}">`;
+  const n = (p.username || "?").trim();
+  const hue = [...n].reduce((a, c) => a + c.charCodeAt(0), 0) % 360;
+  return `<span class="avatar avatar-ini" style="background:hsl(${hue},45%,40%)">${esc(n[0].toUpperCase())}</span>`;
 }
 function closeAccounts() { document.getElementById("acc-overlay").classList.remove("open"); }
 async function setLevel(uid, level) {
