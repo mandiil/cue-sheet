@@ -120,6 +120,9 @@ const SUPA = {
   .det-table { margin-top: 12px; }
   .det-table td { min-width: 0; padding: 4px 10px; }
   .det-table .mono { font-family: "SF Mono", Menlo, Consolas, monospace; }
+  .det-table tr.hover td { background: rgba(212,168,67,.18); }
+  .det-table tr.unsel td { color: var(--muted); }
+  .det-table tr.unsel td.mono { text-decoration: line-through; opacity: .7; }
   .views { display: flex; gap: 8px; margin-bottom: 12px; }
   .views button.active { background: var(--accent); border-color: var(--accent); color: #14161a; font-weight: 600; }
   td.rec-session { background: rgba(95,174,110,.18); }
@@ -1906,6 +1909,25 @@ function secToTC(sec) { return fmtTC(detOffsetFrames() + Math.round(sec * fps())
 // ---------- Uppspelning / scrubbing / zoom ----------
 let detAudio = null, detPlayhead = 0, scrubbing = false;
 let detView = null; // { s, e } i sekunder; null = hela filen
+let detHover = -1;  // index på region under muspekaren (vågform eller lista)
+
+function regionAtX(e) {
+  const cv = document.getElementById("det-wave");
+  const rect = cv.getBoundingClientRect();
+  const v = viewSpan();
+  const t = v.s + Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width)) * (v.e - v.s);
+  return detected.findIndex(r => t >= r.start && t <= r.end);
+}
+function setDetHover(i, fromList) {
+  if (i === detHover) return;
+  detHover = i;
+  document.querySelectorAll("#det-results tr[data-i]").forEach(tr => {
+    const on = parseInt(tr.dataset.i, 10) === i;
+    tr.classList.toggle("hover", on);
+    if (on && !fromList) tr.scrollIntoView({ block: "nearest" });
+  });
+  redrawWave();
+}
 
 function setupPlayback(file) {
   detAudio = document.getElementById("det-audio");
@@ -1970,7 +1992,11 @@ function initWaveEvents() {
     waveSeek(e);
     detAudio.play().then(() => requestAnimationFrame(playheadTick)).catch(() => {});
   });
-  cv.addEventListener("pointermove", e => { if (scrubbing) waveSeek(e); });
+  cv.addEventListener("pointermove", e => {
+    if (scrubbing) waveSeek(e);
+    if (audioEnv) setDetHover(regionAtX(e));
+  });
+  cv.addEventListener("pointerleave", () => { if (!scrubbing) setDetHover(-1); });
   const stop = () => { if (scrubbing) { scrubbing = false; detAudio && detAudio.pause(); } };
   cv.addEventListener("pointerup", stop);
   cv.addEventListener("pointercancel", stop);
@@ -2029,12 +2055,14 @@ function splitAtPlayhead() {
 
 function renderDetected() {
   const el = document.getElementById("det-results");
+  detHover = -1; // index kan ha ändrats (omdetektering, dela, slå ihop)
   if (!detected.length) { el.innerHTML = ""; return; }
   el.innerHTML = `<table class="det-table">
     <thead><tr><th></th><th></th><th>#</th><th>TC In</th><th>TC Ut</th><th>Längd</th><th>Innehåll</th></tr></thead>
     <tbody>` +
-    detected.map((r, i) => `<tr>
-      <td><input type="checkbox" ${r.sel ? "checked" : ""} onchange="detected[${i}].sel=this.checked"></td>
+    detected.map((r, i) => `<tr data-i="${i}" class="${i === detHover ? "hover" : ""}${r.sel ? "" : " unsel"}"
+        onmouseenter="setDetHover(${i},true)" onmouseleave="setDetHover(-1,true)">
+      <td><input type="checkbox" ${r.sel ? "checked" : ""} onchange="detected[${i}].sel=this.checked;this.closest('tr').classList.toggle('unsel',!this.checked);redrawWave()"></td>
       <td><button class="icon" title="Spela/pausa från cue-start" onclick="playRegion(${i})">▶</button></td>
       <td>${i + 1}</td>
       <td class="mono">${secToTC(r.start)}</td>
@@ -2173,12 +2201,20 @@ function drawWave(thr) {
   const lo = -60, hi = 0;
   const y = db => H - ((Math.max(lo, Math.min(hi, db)) - lo) / (hi - lo)) * H;
 
-  // detekterade regioner
-  g.fillStyle = "rgba(31,170,60,.25)";
-  detected.forEach(r => {
+  // detekterade regioner: gröna = valda, grå = bortkryssade, guld = den man hovrar över
+  detected.forEach((r, i) => {
     if (r.end < v.s || r.start > v.e) return;
     const x0 = tx(Math.max(r.start, v.s)), x1 = tx(Math.min(r.end, v.e));
+    const hov = i === detHover;
+    g.fillStyle = hov ? "rgba(212,168,67,.38)" : r.sel ? "rgba(31,170,60,.25)" : "rgba(154,160,168,.14)";
     g.fillRect(x0, 0, x1 - x0, H);
+    if (hov) { g.strokeStyle = "#d4a843"; g.lineWidth = 1.5; g.strokeRect(x0 + .75, .75, x1 - x0 - 1.5, H - 1.5); }
+    // nummer på regionen (om det får plats)
+    if (x1 - x0 > 16) {
+      g.font = (hov ? "bold " : "") + "11px sans-serif";
+      g.fillStyle = hov ? "#ffe9a8" : r.sel ? "#8fd49a" : "#9aa0a8";
+      g.fillText(String(i + 1), x0 + 4, H - 6);
+    }
   });
   // envelope inom vyfönstret
   g.strokeStyle = "#d4a843"; g.lineWidth = 1;
