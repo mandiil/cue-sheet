@@ -175,6 +175,13 @@ const SUPA = {
   td { padding: 5px 4px; border-bottom: 1px solid var(--border); vertical-align: middle; min-width: 90px; }
   td.col-no { min-width: 0; width: 1%; padding: 5px 2px; }
   td.col-no input { width: 46px; padding: 7px 3px; text-align: center; font-weight: 600; color: var(--accent); }
+  td.col-no { white-space: nowrap; }
+  .sub-toggle, .sub-toggle-gap { display: inline-block; width: 16px; margin-right: 2px; vertical-align: middle; }
+  .sub-toggle { background: none; border: none; padding: 0; color: var(--accent); font-size: 13px; cursor: pointer; opacity: .8; }
+  .sub-toggle:hover, .sub-toggle.open { opacity: 1; }
+  tr.sub-row td { background: rgba(212, 168, 67, 0.05); border-bottom: 1px dashed var(--border); padding-top: 3px; padding-bottom: 3px; }
+  tr.sub-row .sub-tag { color: var(--accent); opacity: .7; margin-left: 20px; }
+  tr.sub-row input { padding: 5px 8px; }
   td.col-check { text-align: center; min-width: 56px; }
   td.col-short { min-width: 0; width: 1%; white-space: nowrap; padding: 5px 2px; }
   td.col-short input { width: auto; min-width: 40px; text-align: center; padding: 7px 3px; font-variant-numeric: tabular-nums; }
@@ -579,7 +586,7 @@ const SUPA = {
     <div class="col-hint" style="padding:6px 18px 0">Välj vilka spår som är musik. Spår vars namn innehåller Music/MX/Score är förvalda.</div>
     <div id="aaf-tracks" style="padding:8px 18px;max-height:46vh;overflow:auto"></div>
     <div class="col-hint" style="padding:0 18px 10px">
-      <label style="display:flex;gap:8px;align-items:center;cursor:pointer"><input type="checkbox" id="aaf-merge" checked> Slå ihop angränsande klipp med samma namn (t.ex. klipp som är delade vid en bildklippning)</label>
+      <label style="display:flex;gap:8px;align-items:center;cursor:pointer"><input type="checkbox" id="aaf-merge" checked> Slå ihop klipp med samma namn som ligger inom 3 s från varandra (t.ex. delade vid en bildklippning)</label>
     </div>
     <div class="cm-foot">
       <button class="primary" onclick="confirmAaf()">Importera</button>
@@ -1111,7 +1118,9 @@ function render() {
         cells += `<td class="col-stems${tc}" data-ver="${col.id}">${stemCellHtml(i, cue, col)}</td>`;
       } else if (col.type === "no") {
         const miss = cue.f && cue.f.missing ? `<span class="missing-mark" title="Saknas i senaste import – klicka för att ta bort markeringen" onclick="clearMissing(${i})">⚠</span>` : "";
-        cells += `<td class="col-no${tc}"><input ${d} value="${esc(v)}" oninput="updF(${i},'${col.id}',this.value)">${miss}</td>`;
+        const nSub = cue.sub ? cue.sub.length : 0;
+        const arrow = nSub ? `<button class="sub-toggle ${subOpenId === cue.id ? "open" : ""}" title="${nSub} fil${nSub > 1 ? "er" : ""} till ligger ovanpå – visa/dölj" onclick="toggleSub(${i})">${subOpenId === cue.id ? "▾" : "▸"}</button>` : `<span class="sub-toggle-gap"></span>`;
+        cells += `<td class="col-no${tc}">${arrow}<input ${d} value="${esc(v)}" oninput="updF(${i},'${col.id}',this.value)">${miss}</td>`;
       } else if (col.type === "short") {
         const rr = isVerRef(col.id) ? `;refreshVerCells(${i})` : "";
         // fältet växer med innehållet (size = antal tecken) så t.ex. "2.4.1" alltid syns helt
@@ -1162,6 +1171,23 @@ function render() {
       </td>` : `<td class="act"></td>`;
     tr.innerHTML = cells;
     tb.appendChild(tr);
+    // extra filer som ligger ovanpå huvudklippet (från AAF) – fälls ut under raden
+    if (cue.sub && cue.sub.length && subOpenId === cue.id) {
+      const fi = cols.findIndex(c => c.id === "filename"), ti = cols.findIndex(c => c.id === "tc");
+      cue.sub.forEach((s, k) => {
+        const str = document.createElement("tr"); str.className = "sub-row";
+        let h = "";
+        cols.forEach((col, ci) => {
+          if (ci === fi) h += `<td class="col-text col-temp"><input ${dis(col)} value="${esc(s.temp || "")}" placeholder="filnamn" onmouseenter="showTip(this)" onmouseleave="hideTip()" onfocus="hideTip()" oninput="updSub(${i},${k},this.value)"></td>`;
+          else if (ci === ti) h += `<td><span class="ts" title="TC in – TC ut">${esc(s.tc || "")}${s.tcout ? " – " + esc(s.tcout) : ""}</span></td>`;
+          else if (ci === 0) h += `<td class="col-no"><span class="sub-tag" title="Ligger ovanpå cue ${esc((cue.f && cue.f.no) || "")}">└</span></td>`;
+          else if (fi < 0 && ci === 1) h += `<td class="col-text col-temp"><input ${dis(col)} value="${esc(s.temp || "")}" oninput="updSub(${i},${k},this.value)"></td>`;
+          else h += "<td></td>";
+        });
+        h += isAdmin() ? `<td class="act"><button class="icon" title="Gör till egen cue" onclick="promoteSub(${i},${k})">⤴</button><button class="icon del" title="Ta bort filen från cuen" onclick="delSub(${i},${k})">✕</button></td>` : `<td class="act"></td>`;
+        str.innerHTML = h; tb.appendChild(str);
+      });
+    }
   });
   document.getElementById("empty-msg").style.display = state.cues.length ? "none" : "block";
   renderTotals();
@@ -1249,6 +1275,32 @@ function fnHeadHtml(col) {
     `<button class="${m === "temp" ? "on" : ""}" onclick="setFnMode('temp')">Temp</button></span>`;
 }
 function cueName(cue) { return (cue.f && (cue.f.temp || cue.f.filename)) || ""; }
+// Extra filer som ligger ovanpå huvudklippet: cue.sub = [{ temp, tc, tcout }] (bara en cue utfälld åt gången)
+let subOpenId = null;
+function toggleSub(i) {
+  const cue = state.cues[i]; if (!cue) return;
+  if (!cue.id) cue.id = newId();
+  subOpenId = subOpenId === cue.id ? null : cue.id;
+  render();
+}
+function updSub(i, k, v) {
+  const cue = state.cues[i]; if (!cue || !cue.sub || !cue.sub[k] || !isAdmin()) return;
+  cue.sub[k].temp = v; touchTs(cue); save();
+}
+function delSub(i, k) {
+  const cue = state.cues[i]; if (!cue || !cue.sub || !isAdmin()) return;
+  cue.sub.splice(k, 1); if (!cue.sub.length) delete cue.sub;
+  render();
+}
+function promoteSub(i, k) {
+  const cue = state.cues[i]; if (!cue || !cue.sub || !cue.sub[k] || !isAdmin()) return;
+  const s = cue.sub[k]; cue.sub.splice(k, 1); if (!cue.sub.length) delete cue.sub;
+  const f = { no: "", temp: s.temp || "", tc: s.tc || "" };
+  if (state.columns.some(c => c.id === "tcout") && s.tcout) f.tcout = s.tcout;
+  if (state.columns.some(c => c.id === "filmcut")) f.filmcut = state.meta.cut || "";
+  state.cues.splice(i + 1, 0, { f });
+  render(); toast("Egen cue skapad – ge den ett nummer");
+}
 function updF(i, colId, v) {
   const cue = state.cues[i];
   const col = state.columns.find(c => c.id === colId) || (colId === "temp" ? state.columns.find(c => c.id === "filename") : null);
@@ -3112,7 +3164,7 @@ function recExisting() {
   return state.cues.map((q, i) => ({ i, q, no: (q.f && q.f.no) || "", name: cueName(q), tc: parseTC((q.f && q.f.tc) || "") }));
 }
 function reconcileImport(clips, src) {
-  const rows = clips.map(c => ({ name: (c.name || "").trim(), tcIn: c.tcIn, tcOut: c.tcOut || "", note: c.note || "",
+  const rows = clips.map(c => ({ name: (c.name || "").trim(), tcIn: c.tcIn, tcOut: c.tcOut || "", note: c.note || "", sub: c.sub,
                                  inF: parseTC(c.tcIn || ""), outF: c.tcOut ? parseTC(c.tcOut) : null, match: -1, skip: false }))
                     .filter(r => r.inF != null).sort((a, b) => a.inF - b.inF);
   if (!rows.length) { toast("Inga klipp med giltig TC"); return; }
@@ -3230,7 +3282,7 @@ function renderRec() {
     } else res = `<b>Ny cue ${esc(r.plannedNo || "")}</b>`;
     return `<tr class="${r.skip ? "unsel" : ""}">
       <td>${i + 1}</td>
-      <td style="min-width:240px"><b>${esc(r.name || "(namnlös)")}</b><br><span style="color:var(--muted);font-family:'SF Mono',Menlo,monospace;font-size:12px">${esc(r.tcIn)}${r.tcOut ? " – " + esc(r.tcOut) : ""}</span></td>
+      <td style="min-width:240px"><b>${esc(r.name || "(namnlös)")}</b>${r.sub && r.sub.length ? ` <span style="color:var(--muted)">+${r.sub.length} fil${r.sub.length > 1 ? "er" : ""} ovanpå</span>` : ""}<br><span style="color:var(--muted);font-family:'SF Mono',Menlo,monospace;font-size:12px">${esc(r.tcIn)}${r.tcOut ? " – " + esc(r.tcOut) : ""}</span></td>
       <td><select onchange="recSet(${i},parseInt(this.value,10))" ${r.skip ? "disabled" : ""}>${optsHtml(r.match)}</select></td>
       <td>${res}</td>
       <td style="text-align:center"><input type="checkbox" ${r.skip ? "checked" : ""} onchange="recSkip(${i},this.checked)" title="Hoppa över"></td>
@@ -3279,6 +3331,7 @@ function applyReconcile(rows, src, opt) {
       else if (q.f.temp !== r.name) notes.push("importen har annat tempnamn: " + r.name);
     }
     if (q.f.missing) delete q.f.missing;
+    if (r.sub) { if (r.sub.length) q.sub = r.sub.map(x => ({ temp: x.name, tc: x.tcIn, tcout: x.tcOut })); else delete q.sub; }
     if (r.note) notes.push(r.note);
     if (notes.length) q.f.comments = (q.f.comments ? q.f.comments + " · " : "") + `Avstämning ${src}: ` + notes.join(" · ");
     touchTs(q); nUpd++;
@@ -3290,7 +3343,9 @@ function applyReconcile(rows, src, opt) {
     const r = e.row, f = { no: e.no, temp: r.name, tc: r.tcIn, comments: `Import ${src}` + (r.tcOut && !hasTcout ? ` · slut ${r.tcOut}` : "") + (r.note ? " · " + r.note : "") };
     if (hasTcout && r.tcOut) f.tcout = r.tcOut;
     if (hasCut) f.filmcut = state.meta.cut || "";
-    out.push({ f }); nNew++;
+    const nc = { f };
+    if (r.sub && r.sub.length) nc.sub = r.sub.map(x => ({ temp: x.name, tc: x.tcIn, tcout: x.tcOut }));
+    out.push(nc); nNew++;
   });
   state.cues = out;
   missing.forEach(e => { if (!e.q.f) e.q.f = {}; e.q.f.missing = "x"; e.q.f.comments = (e.q.f.comments ? e.q.f.comments + " · " : "") + `Saknas i importen ${src}`; });
@@ -3628,18 +3683,28 @@ function confirmAaf() {
     let cur = null;
     cl.forEach(x => {
       const name = aafClipName(x.name), inF = Math.round(x.pos / t.rate * c.fps), outF = Math.round((x.pos + x.len) / t.rate * c.fps);
-      if (merge && cur && cur.name === name && inF <= cur.outF + 2) { cur.outF = Math.max(cur.outF, outF); return; }
+      if (merge && cur && cur.name === name && inF <= cur.outF + 3 * c.fps) { /* samma namn inom 3 s = samma cue */ cur.outF = Math.max(cur.outF, outF); return; }
       cur = { name, inF, outF, track: t.name };
       rows.push(cur);
     });
   });
   rows.sort((a, b) => a.inF - b.inF);
-  const seen = new Set();
-  const clips = rows.filter(r => { const k = r.name + "|" + r.inF; if (seen.has(k)) return false; seen.add(k); return true; });
+  const seen = new Map();
+  const clips = rows.filter(r => { const k = r.name + "|" + r.inF, d = seen.get(k); if (d) { d.outF = Math.max(d.outF, r.outF); return false; } seen.set(k, r); return true; });
   if (!clips.length) { toast("Inga klipp på valda spår"); return; }
   closeAaf();
   if (c.fps !== fps()) toast(`Obs: AAF-filen är ${c.fps} fps, projektet ${fps()} fps`);
-  reconcileImport(clips.map(r => ({ name: r.name, tcIn: fmtTC(c.start + r.inF, c.fps), tcOut: fmtTC(c.start + r.outF, c.fps), note: r.track ? `spår ${r.track}` : "" })), "AAF " + aafFileName);
+  // klipp som ligger ovanpå varandra (överlapp > 1 s, dvs. mer än en övertoning) hör till samma cue:
+  // det första/översta blir huvudklipp, resten läggs som extra filer under cuen
+  const groups = [];
+  clips.forEach(r => {
+    const g = groups[groups.length - 1];
+    if (g && r.inF < g.outF - c.fps) { g.sub.push(r); g.outF = Math.max(g.outF, r.outF); }
+    else groups.push({ name: r.name, inF: r.inF, outF: r.outF, track: r.track, sub: [] });
+  });
+  const tcs = f => fmtTC(c.start + f, c.fps);
+  reconcileImport(groups.map(g => ({ name: g.name, tcIn: tcs(g.inF), tcOut: tcs(g.outF), note: g.track ? `spår ${g.track}` : "",
+    sub: g.sub.map(x => ({ name: x.name, tcIn: tcs(x.inF), tcOut: tcs(x.outF) })) })), "AAF " + aafFileName);
   if (aafReader) tlBuild(aafReader, c, picked);
 }
 
@@ -3834,7 +3899,7 @@ function tlFlashCue(c) {
   const t = state.timeline;
   let best = -1, bestTc = -1;
   state.cues.forEach((q, i) => {
-    if (!q.f || ((q.f.temp || "") !== c.name && (q.f.filename || "") !== c.name)) return;
+    if (!q.f || ((q.f.temp || "") !== c.name && (q.f.filename || "") !== c.name && !(q.sub || []).some(s => s.temp === c.name))) return;
     const f = parseTC(q.f.tc || "", t.fps);
     if (f == null || f > t.start + c.inF + 2) return;
     if (f > bestTc) { bestTc = f; best = i; }
@@ -3948,7 +4013,7 @@ async function tlLoadChunk(c, a, b, cs, gen) {
 
 function exportCols(cols) {
   // File Name-kolumnen exporteras som två: File Name + Temp (om projektet har tempnamn)
-  if (!state.cues.some(c => c.f && c.f.temp)) return cols;
+  if (!state.cues.some(c => (c.f && c.f.temp) || (c.sub && c.sub.length))) return cols;
   const out = [];
   cols.forEach(c => { out.push(c); if (c.id === "filename") out.push({ id: "temp", label: "Temp", type: "text" }); });
   return out;
@@ -3973,6 +4038,7 @@ function exportXlsx() {
       }
       return col.type === "check" ? (v ? "✓" : "") : v;
     }));
+    (c.sub || []).forEach(sb => rows.push(ecols.map(col => col.id === "temp" ? "  └ " + (sb.temp || "") : col.id === "tc" ? (sb.tc || "") : col.id === "tcout" ? (sb.tcout || "") : "")));
   });
   rows.push([]);
   rows.push(["COUNT:", state.cues.length]);
