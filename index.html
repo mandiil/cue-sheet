@@ -387,7 +387,7 @@ const SUPA = {
     <button onclick="cloudLoginEmail()">Skicka inloggningslänk</button>
   </span>
   <button id="btn-projects" style="display:none" onclick="openProjects()">Produktioner…</button>
-  <button id="btn-invite" style="display:none" onclick="openInvite()">Bjud in…</button>
+  <button id="btn-invite" style="display:none" onclick="openInvite()">Användare…</button>
   <button id="btn-accounts" style="display:none" onclick="openAccounts()">Konton…</button>
   <span id="cloud-proj" class="totals" style="text-align:left"></span>
   <div class="spacer"></div>
@@ -435,9 +435,20 @@ const SUPA = {
 <!-- Bjud in / medlemmar -->
 <div id="inv-overlay" class="overlay" onmousedown="invDown=(event.target===this)" onmouseup="if(invDown&&event.target===this)closeInvite();invDown=false">
   <div class="cm-box" role="dialog" aria-modal="true" style="max-width:640px">
-    <div class="cm-head"><b id="inv-title">Bjud in · medlemmar</b><span class="cm-sub" id="inv-sub"></span></div>
+    <div class="cm-head"><b id="inv-title">Bjud in användare</b><span class="cm-sub" id="inv-sub"></span></div>
+    <div class="cm-input" id="inv-pick-box" style="padding-top:14px">
+      <label>Välj användare (finns redan i systemet)</label>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <select id="inv-pick" style="flex:1;min-width:200px"><option value="">– välj –</option></select>
+        <select id="inv-pick-role" style="width:auto">
+          <option value="commenter">Read &amp; Comment</option>
+          <option value="editor">Read &amp; Write</option>
+        </select>
+        <button class="primary" onclick="addPickedUser()">Lägg till</button>
+      </div>
+    </div>
     <div class="cm-input" id="inv-email-box" style="padding-top:14px;border-bottom:1px solid var(--border);padding-bottom:14px">
-      <label>Bjud in via mejl</label>
+      <label>Bjud in via mejl (ny användare)</label>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
         <input id="inv-email" type="email" placeholder="namn@exempel.se" style="flex:1;min-width:200px" onkeydown="if(event.key==='Enter')sendInviteEmail()">
         <select id="inv-email-role" style="width:auto">
@@ -569,7 +580,7 @@ const SUPA = {
   <div id="det-status" class="col-hint"></div>
   <canvas id="det-wave" style="display:none"></canvas>
   <div id="det-playinfo" class="col-hint" style="display:none">
-    Håll ner musknappen i vågformen och dra för att lyssna · klicka för att flytta spelhuvudet ·
+    Håll ner musknappen i vågformen och dra för att lyssna · klicka för att flytta spelhuvudet · shift-klicka en cue för att markera den för ihopslagning ·
     <span id="det-time" style="font-family:'SF Mono',Menlo,monospace;color:var(--text)"></span>
   </div>
   <audio id="det-audio" preload="auto" style="display:none"></audio>
@@ -3415,7 +3426,7 @@ async function openProject(id) {
 function updateInviteBtn() {
   const b = document.getElementById("btn-invite");
   b.style.display = cloudActive() ? "" : "none";
-  b.textContent = isManager() ? "Bjud in…" : "Medlemmar";
+  b.textContent = "Användare…";
   b.classList.toggle("admin-only", false);
 }
 function leaveProject() {
@@ -3566,9 +3577,10 @@ async function reloadMembers() {
 async function openInvite() {
   if (!cloudActive()) return;
   const mgr = isManager();
-  document.getElementById("inv-title").textContent = mgr ? "Bjud in · medlemmar" : "Medlemmar";
+  document.getElementById("inv-title").textContent = mgr ? "Bjud in användare" : "Användare";
   document.getElementById("inv-foot-mgr").style.display = mgr ? "" : "none";
   document.getElementById("inv-email-box").style.display = mgr ? "" : "none";
+  document.getElementById("inv-pick-box").style.display = mgr ? "" : "none";
   document.getElementById("inv-overlay").classList.add("open");
   document.getElementById("inv-sub").textContent = cloud.project.name;
   await renderInvite();
@@ -3583,8 +3595,15 @@ async function renderInvite(newLink) {
     mgr ? sb.from("invites").select("token,role,created_at,expires_at,used_by").eq("project_id", pid).is("used_by", null).order("created_at", { ascending: false }) : Promise.resolve({ data: [] })
   ]);
   cloud.members = mem || [];
+  if (mgr) {
+    const { data: all } = await sb.from("profiles").select("id,username").order("username");
+    const ids = new Set(cloud.members.map(m => m.user_id));
+    const sel = document.getElementById("inv-pick");
+    sel.innerHTML = `<option value="">– välj –</option>` + (all || []).filter(p => !ids.has(p.id))
+      .map(p => `<option value="${p.id}">${esc(p.username || p.id.slice(0, 8))}</option>`).join("");
+  }
   if (!mgr) {
-    el.innerHTML = `<label>Medlemmar i produktionen</label>` + cloud.members.map(m => {
+    el.innerHTML = `<label>Användare i produktionen</label>` + cloud.members.map(m => {
       const pr = m.profiles || {}; const isOwner = m.user_id === cloud.project.owner;
       const rr = m.role === "admin" ? "editor" : m.role;
       return `<div class="proj-row">${avatarHtml(pr)}<b>${esc(pr.username || "?")}</b>
@@ -3596,7 +3615,7 @@ async function renderInvite(newLink) {
   if (newLink) h += `<div class="col-hint" style="margin-bottom:4px">Ny inbjudningslänk – skicka den till personen:</div>
     <div class="inv-link" id="inv-newlink">${esc(newLink)}</div>
     <button onclick="navigator.clipboard.writeText(document.getElementById('inv-newlink').textContent).then(()=>toast('Länk kopierad'))">Kopiera länk</button><hr style="border:0;border-top:1px solid var(--border);margin:14px 0">`;
-  h += `<label>Medlemmar</label>`;
+  h += `<label>Användare</label>`;
   h += (cloud.members || []).map(m => {
     const pr = m.profiles || {}; const isOwner = m.user_id === cloud.project.owner;
     const roleSel = isOwner ? `<span class="role-pill editor">Read & Write</span><span class="muted">ägare</span>` :
@@ -3618,6 +3637,15 @@ async function renderInvite(newLink) {
         <button class="icon del" title="Återkalla" onclick="revokeInvite('${i.token}')">✕</button></div>`).join("");
   }
   el.innerHTML = h;
+}
+async function addPickedUser() {
+  const uid = document.getElementById("inv-pick").value;
+  const r = document.getElementById("inv-pick-role").value;
+  if (!uid) { toast("Välj en användare i listan"); return; }
+  const { error } = await sb.from("members").insert({ project_id: cloud.project.id, user_id: uid, role: r });
+  if (error) { toast("Kunde inte lägga till: " + error.message); return; }
+  toast("Användaren tillagd som " + ROLE_LABEL[r]);
+  await reloadMembers(); render(); renderInvite();
 }
 function inviteUrl(token) { return location.origin + location.pathname + "?invite=" + token; }
 async function newInviteToken(r) {
