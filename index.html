@@ -556,6 +556,19 @@ const SUPA = {
 </div>
 <div id="print-area"></div>
 
+<!-- AudD-resultat (nät-identifiering) -->
+<div id="audd-overlay" class="overlay" onmousedown="auddDown=(event.target===this)" onmouseup="if(auddDown&&event.target===this)closeAudd();auddDown=false">
+  <div class="cm-box" role="dialog" aria-modal="true" style="max-width:520px">
+    <div class="cm-head"><b>AudD – identifiering</b><span class="cm-sub" id="audd-sub"></span></div>
+    <div id="audd-body" style="padding:14px 18px;line-height:1.5"></div>
+    <div class="cm-foot">
+      <button class="primary" id="audd-use" onclick="auddUse()">Använd som Temp-namn</button>
+      <div class="spacer"></div>
+      <button onclick="closeAudd()">Stäng</button>
+    </div>
+  </div>
+</div>
+
 <!-- Avstämning vid import: matcha inkommande klipp mot befintliga cuer -->
 <div id="rec-overlay" class="overlay" onmousedown="recDown=(event.target===this)" onmouseup="if(recDown&&event.target===this)closeRec();recDown=false">
   <div class="cm-box" role="dialog" aria-modal="true" style="max-width:960px">
@@ -682,6 +695,7 @@ const SUPA = {
     <button onclick="tlZoom(1.6)">Zooma in +</button>
     <button onclick="tlZoom(1/1.6)">Zooma ut −</button>
     <button onclick="tlZoomAll()">Allt</button>
+    <button id="tl-audd" class="admin-only" onclick="tlAudd()" title="Skickar 15 s av det markerade klippet till AudD (nätet) och visar artist/titel med Spotify-länk">Identifiera (AudD)</button>
     <label style="display:flex;align-items:center;gap:5px;font-size:12px;color:var(--muted);cursor:pointer" title="Tidslinjen ligger kvar högst upp medan listan scrollar, och listan scrollar själv till cuen du pekar på"><input type="checkbox" id="tl-pin" onchange="tlPin(this.checked)"> Fäst &amp; följ i listan</label>
     <button id="tl-open-btn" onclick="document.getElementById('tl-aaf-in').click()" title="Ljudet ligger i AAF-filen och sparas inte i projektet – öppna filen igen för att lyssna">Öppna AAF för ljud…</button>
     <input type="file" id="tl-aaf-in" accept=".aaf" style="display:none" onchange="tlOpenFile(event)">
@@ -2384,7 +2398,7 @@ function renderDetected() {
       <td class="mono">${secToTC(r.start)}</td>
       <td class="mono">${secToTC(r.end)}</td>
       <td class="mono">${fmtSec(r.end - r.start)}</td>
-      <td>${r.matches && r.matches.length
+      <td>${r.audd ? `<div style="color:var(--accent)" title="AudD${r.audd.album ? " · " + esc(r.audd.album) : ""}">${esc(r.audd.artist + " – " + r.audd.title)}</div>` : ""}${r.matches && r.matches.length
         ? `<select title="${esc(r.matches.map(m => m.path).join("\n"))}"
              onchange="detected[${i}].matchSel=parseInt(this.value);this.title=detected[${i}].matches[this.value].path">` +
           r.matches.map((m, mi) =>
@@ -2394,6 +2408,7 @@ function renderDetected() {
       <td style="white-space:nowrap">
         ${i > 0 ? `<button class="icon" title="Slå ihop med föregående cue (${i})" onclick="mergeWithPrev(${i})">⤒ slå ihop med ${i}</button>` : ""}
         <button class="icon" title="Markera/avmarkera för ihopslagning (samma som shift-klick i vågformen)" onclick="toggleMark(${i})">${r.mark ? "avmarkera" : "markera"}</button>
+        ${sb && cloud.user ? `<button class="icon" title="Identifiera via AudD (nätet, 15 s ur cuen)" onclick="detAudd(${i})">AudD</button>` : ""}
       </td>
     </tr>`).join("") +
     `</tbody></table>
@@ -2486,7 +2501,8 @@ function addDetected() {
   if (!sel.length) { toast("Inga cuer valda"); return; }
   const clips = sel.map(r => {
     const m = r.matches && r.matchSel >= 0 ? r.matches[r.matchSel] : null;
-    return { name: m ? m.name : "", tcIn: secToTC(r.start), tcOut: secToTC(r.end), note: `auto-detekterad · längd ${fmtSec(r.end - r.start)}` + (m ? ` · SongSpot ${m.score}` : "") };
+    const name = m ? m.name : r.audd ? `${r.audd.artist} – ${r.audd.title}` : "";
+    return { name, tcIn: secToTC(r.start), tcOut: secToTC(r.end), note: `auto-detekterad · längd ${fmtSec(r.end - r.start)}` + (m ? ` · SongSpot ${m.score}` : "") + (r.audd ? ` · AudD${r.audd.album ? " · " + r.audd.album : ""}${r.audd.spotify ? " · " + r.audd.spotify : ""}` : "") };
   });
   reconcileImport(clips, "auto-detektering");
   // fäll ihop panelen och visa tabellen
@@ -3253,6 +3269,91 @@ function parseXmeml(text) {
   out.sort((a, b) => (parseTC(a.tcIn, tb) || 0) - (parseTC(b.tcIn, tb) || 0));
   if (tb !== fps()) toast(`Obs: XML-filen är ${tb} fps, projektet ${fps()} fps`);
   return out;
+}
+
+// ---------- AudD: nät-identifiering via Supabase Edge Function "audd" (nyckeln ligger som secret på servern) ----------
+let auddDown = false, auddCur = null;
+function auddWav(samples, sr) { // 16-bit mono WAV, nedsamplad till ~22 kHz
+  const dec = Math.max(1, Math.floor(sr / 22050)), n = Math.floor(samples.length / dec), osr = Math.round(sr / dec);
+  const buf = new ArrayBuffer(44 + n * 2), D = new DataView(buf);
+  const str = (o, t) => { for (let i = 0; i < t.length; i++) D.setUint8(o + i, t.charCodeAt(i)); };
+  str(0, "RIFF"); D.setUint32(4, 36 + n * 2, true); str(8, "WAVE"); str(12, "fmt "); D.setUint32(16, 16, true);
+  D.setUint16(20, 1, true); D.setUint16(22, 1, true); D.setUint32(24, osr, true); D.setUint32(28, osr * 2, true);
+  D.setUint16(32, 2, true); D.setUint16(34, 16, true); str(36, "data"); D.setUint32(40, n * 2, true);
+  for (let i = 0; i < n; i++) {
+    let a = 0; for (let k = 0; k < dec; k++) a += samples[i * dec + k];
+    D.setInt16(44 + i * 2, Math.max(-32768, Math.min(32767, Math.round(a / dec * 32767))), true);
+  }
+  return new Blob([buf], { type: "audio/wav" });
+}
+async function auddLookup(samples, sr) {
+  if (!sb || !cloud.user) throw new Error("Logga in för att använda AudD");
+  const { data: { session } } = await sb.auth.getSession();
+  if (!session) throw new Error("Inte inloggad");
+  const fd = new FormData();
+  fd.append("file", auddWav(samples, sr), "clip.wav");
+  if (cloud.project) fd.append("project_id", cloud.project.id);
+  const r = await fetch(SUPA.url + "/functions/v1/audd", { method: "POST", headers: { Authorization: "Bearer " + session.access_token, apikey: SUPA.anonKey }, body: fd });
+  let j = null; try { j = await r.json(); } catch (e) {}
+  if (!r.ok) throw new Error((j && j.error) || ("AudD-fel " + r.status));
+  return j;
+}
+function auddPick(res) { // plocka ut det vi visar/sparar ur AudD-svaret
+  const h = res && res.result; if (!h) return null;
+  return { artist: h.artist || "", title: h.title || "", album: h.album || "", release: h.release_date || "", label: h.label || "",
+           spotify: h.spotify && h.spotify.external_urls && h.spotify.external_urls.spotify || "", apple: h.apple_music && h.apple_music.url || "", link: h.song_link || "" };
+}
+function showAudd(res, hit, onUse, sub) {
+  auddCur = { hit, onUse };
+  document.getElementById("audd-sub").textContent = sub || "";
+  const usage = res && res.day_cap ? `<div class="col-hint" style="padding:10px 0 0;margin:0">Förbrukning: ${res.mine}/${res.day_cap} idag · ${res.total}/${res.total_cap} totalt</div>` : "";
+  document.getElementById("audd-body").innerHTML = hit
+    ? `<div style="font-size:18px"><b>${esc(hit.artist)}</b> – ${esc(hit.title)}</div>
+       <div style="color:var(--muted)">${esc([hit.album, hit.release ? hit.release.slice(0, 4) : "", hit.label].filter(Boolean).join(" · "))}</div>
+       <div style="margin-top:8px;display:flex;gap:10px;flex-wrap:wrap">
+         ${hit.spotify ? `<a href="${esc(hit.spotify)}" target="_blank" rel="noopener">Öppna i Spotify ↗</a>` : ""}
+         ${hit.apple ? `<a href="${esc(hit.apple)}" target="_blank" rel="noopener">Apple Music ↗</a>` : ""}
+         ${hit.link ? `<a href="${esc(hit.link)}" target="_blank" rel="noopener">Alla tjänster ↗</a>` : ""}
+       </div>${usage}`
+    : `<div>Ingen träff – AudD kände inte igen klippet.</div><div class="col-hint" style="padding:6px 0 0;margin:0">Prova en annan del av cuen (mer melodi, mindre dialog ovanpå). Sökningen räknas ändå.</div>${usage}`;
+  document.getElementById("audd-use").style.display = hit && onUse ? "" : "none";
+  document.getElementById("audd-use").textContent = "Använd som Temp-namn";
+  document.getElementById("audd-overlay").classList.add("open");
+}
+function closeAudd() { document.getElementById("audd-overlay").classList.remove("open"); }
+function auddUse() { if (auddCur && auddCur.onUse) auddCur.onUse(auddCur.hit); closeAudd(); }
+// Tidslinje: 15 s ur det markerade klippet (en bit in i klippet, för att slippa fade-in)
+async function tlAudd() {
+  if (tl.sel < 0) { toast("Klicka på ett klipp i tidslinjen först"); return; }
+  const c = tl.clips[tl.sel];
+  if (!tl.reader || !c.chans || !c.chans.length) { toast("Ljudet ligger i AAF-filen – öppna den först (Öppna AAF för ljud…)"); return; }
+  const ch = c.chans[0], total = Math.floor((c.outF - c.inF) / state.timeline.fps * ch.sr), n = Math.min(15 * ch.sr, total);
+  const from = total > n ? Math.floor((total - n) * 0.35) : 0;
+  const btn = document.getElementById("tl-audd"); btn.disabled = true; tlStatus("Frågar AudD…");
+  try {
+    const samples = await tl.reader.readPcm(ch, ch.offset + from, n);
+    const res = await auddLookup(samples, ch.sr), hit = auddPick(res);
+    const ci = tlCueFor(c), q = ci >= 0 ? state.cues[ci] : null;
+    showAudd(res, hit, q ? (h => { if (!q.f) q.f = {}; q.f.temp = `${h.artist} – ${h.title}`; q.f.comments = (q.f.comments ? q.f.comments + " · " : "") + `AudD: ${h.artist} – ${h.title}${h.album ? " (" + h.album + ")" : ""}${h.spotify ? " " + h.spotify : ""}`; touchTs(q); render(); toast(`Cue ${q.f.no || ""}: Temp = ${q.f.temp}`); }) : null,
+             `${c.name}` + (q ? ` → cue ${(q.f && q.f.no) || ""}` : ""));
+  } catch (e) { toast(String(e.message || e)); }
+  btn.disabled = false; tlStatus("");
+}
+// Auto-detektering: 15 s ur region i
+let detMonoCache = null;
+async function detAudd(i) {
+  const r = detected[i]; if (!r || !detFile) return;
+  detStatus("Frågar AudD…");
+  try {
+    if (!detMonoCache || detMonoCache.file !== detFile) { const m = await fpGetMono(detFile, "Mixdown"); detMonoCache = { file: detFile, samples: m.samples, sr: m.sr }; }
+    const { samples, sr } = detMonoCache;
+    const a = Math.floor(r.start * sr), b = Math.min(samples.length, Math.floor(r.end * sr)), total = b - a, n = Math.min(15 * sr, total);
+    const from = a + (total > n ? Math.floor((total - n) * 0.35) : 0);
+    const res = await auddLookup(samples.subarray(from, from + n), sr), hit = auddPick(res);
+    showAudd(res, hit, hit ? (h => { r.audd = h; renderDetected(); }) : null, `cue ${i + 1} · ${secToTC(r.start)}`);
+    document.getElementById("audd-use").textContent = "Använd som namn på cuen";
+    detStatus(hit ? `AudD: ${hit.artist} – ${hit.title}` : "AudD: ingen träff");
+  } catch (e) { detStatus("AudD: " + (e.message || e)); toast(String(e.message || e)); }
 }
 
 // ---------- Avstämning vid import ----------
@@ -4870,6 +4971,13 @@ async function openAccounts() {
       ${rows}
     </div>`;
   }).join("") || `<div class="cm-empty">Inga konton.</div>`;
+  try { // AudD-förbrukning
+    const { data: st } = await sb.rpc("audd_stats");
+    if (st) el.innerHTML += `<div class="proj-row" style="flex-direction:column;align-items:stretch;margin-top:10px">
+      <div><b>AudD-sökningar</b> <span class="muted">${st.total} av ${st.total_cap} använda totalt · tak ${st.day_cap} per person och dygn</span></div>
+      ${(st.by_user || []).map(u => `<div class="muted" style="margin:3px 0 0 28px">${esc(u.username || u.user_id.slice(0, 8))}: ${u.n} sökningar, ${u.hits} träffar</div>`).join("")}
+    </div>`;
+  } catch (e) {}
 }
 async function deleteUser(uid, name) {
   if (!confirm(`Ta bort kontot "${name}" helt?\n\nPersonen försvinner ur alla produktioner och måste bjudas in på nytt för att komma tillbaka. Kommentarer personen skrivit finns kvar.`)) return;
