@@ -182,6 +182,9 @@ const SUPA = {
   tr.sub-row td { background: rgba(212, 168, 67, 0.05); border-bottom: 1px dashed var(--border); padding-top: 3px; padding-bottom: 3px; }
   tr.sub-row .sub-tag { color: var(--accent); opacity: .7; margin-left: 20px; }
   tr.sub-row input { padding: 5px 8px; }
+  td.col-no input[draggable="true"] { cursor: grab; }
+  tr.dragging td { opacity: .45; }
+  tr.drop-target td { background: rgba(212, 168, 67, 0.16) !important; box-shadow: inset 0 2px 0 var(--accent), inset 0 -2px 0 var(--accent); }
   td.col-check { text-align: center; min-width: 56px; }
   td.col-short { min-width: 0; width: 1%; white-space: nowrap; padding: 5px 2px; }
   td.col-short input { width: auto; min-width: 40px; text-align: center; padding: 7px 3px; font-variant-numeric: tabular-nums; }
@@ -1090,6 +1093,7 @@ function render() {
   tb.innerHTML = "";
   state.cues.forEach((cue, i) => {
     const tr = document.createElement("tr");
+    if (isAdmin()) { tr.setAttribute("ondragover", `cueDragOver(event,${i})`); tr.setAttribute("ondragleave", "cueDragLeave(event)"); tr.setAttribute("ondrop", `cueDrop(event,${i})`); }
     if (isCut(cue)) tr.classList.add("row-cut");
     if (cue.f && cue.f.missing) tr.classList.add("row-missing");
     if (state.columns.some(c => c.tint && getF(cue, c))) tr.classList.add("row-tint");
@@ -1120,7 +1124,8 @@ function render() {
         const miss = cue.f && cue.f.missing ? `<span class="missing-mark" title="Saknas i senaste import – klicka för att ta bort markeringen" onclick="clearMissing(${i})">⚠</span>` : "";
         const nSub = cue.sub ? cue.sub.length : 0;
         const arrow = nSub ? `<button class="sub-toggle ${subOpenId === cue.id ? "open" : ""}" title="${nSub} fil${nSub > 1 ? "er" : ""} till ligger ovanpå – visa/dölj" onclick="toggleSub(${i})">${subOpenId === cue.id ? "▾" : "▸"}</button>` : `<span class="sub-toggle-gap"></span>`;
-        cells += `<td class="col-no${tc}">${arrow}<input ${d} value="${esc(v)}" oninput="updF(${i},'${col.id}',this.value)">${miss}</td>`;
+        const drag = isAdmin() ? ` draggable="true" ondragstart="cueDragStart(event,${i})" ondragend="cueDragEnd(event)" title="Dra numret till en annan cue för att slå ihop dem"` : "";
+        cells += `<td class="col-no${tc}">${arrow}<input ${d}${drag} value="${esc(v)}" oninput="updF(${i},'${col.id}',this.value)">${miss}</td>`;
       } else if (col.type === "short") {
         const rr = isVerRef(col.id) ? `;refreshVerCells(${i})` : "";
         // fältet växer med innehållet (size = antal tecken) så t.ex. "2.4.1" alltid syns helt
@@ -1261,12 +1266,7 @@ function getF(cue, col) {
   return (cue.f && cue.f[col.id]) || "";
 }
 // File Name-kolumnen visar antingen f.filename (slutgiltigt) eller f.temp (tempmusik från AAF/import)
-function fnMode() {
-  if (state.fnMode === "temp" || state.fnMode === "file") return state.fnMode;
-  // förval: Temp om projektet bara har tempnamn än så länge
-  const hasFile = state.cues.some(c => c.f && c.f.filename), hasTemp = state.cues.some(c => c.f && c.f.temp);
-  return hasTemp && !hasFile ? "temp" : "file";
-}
+function fnMode() { return state.fnMode === "temp" ? "temp" : "file"; } // File Name är förval; AAF-import växlar till Temp
 function setFnMode(m) { state.fnMode = m; render(); if (isAdmin()) save(); }
 function fnHeadHtml(col) {
   const m = fnMode();
@@ -1300,6 +1300,82 @@ function promoteSub(i, k) {
   if (state.columns.some(c => c.id === "filmcut")) f.filmcut = state.meta.cut || "";
   state.cues.splice(i + 1, 0, { f });
   render(); toast("Egen cue skapad – ge den ett nummer");
+}
+
+// ---------- Slå ihop två cuer: dra No. på en rad och släpp på en annan ----------
+let dragCue = -1;
+function cueDragStart(ev, i) {
+  if (!isAdmin()) { ev.preventDefault(); return; }
+  dragCue = i; ev.dataTransfer.effectAllowed = "move"; ev.dataTransfer.setData("text/plain", String(i));
+  ev.target.closest("tr").classList.add("dragging");
+}
+function cueDragEnd() {
+  dragCue = -1;
+  document.querySelectorAll("#cue-body tr.drop-target, #cue-body tr.dragging").forEach(t => t.classList.remove("drop-target", "dragging"));
+}
+function cueDragOver(ev, i) {
+  if (dragCue < 0 || dragCue === i) return;
+  ev.preventDefault(); ev.dataTransfer.dropEffect = "move"; ev.currentTarget.classList.add("drop-target");
+}
+function cueDragLeave(ev) { ev.currentTarget.classList.remove("drop-target"); }
+function cueDrop(ev, i) {
+  ev.preventDefault(); const a = dragCue; cueDragEnd();
+  if (a < 0 || a === i) return;
+  mergeCues(Math.min(a, i), Math.max(a, i));
+}
+// a (tidigare i listan) behålls, b läggs in i a. Tomma fält fylls, fritext läggs ihop, b:s tempnamn blir extra fil,
+// kommentarstrådar slås ihop, b:s rad tas bort och löpnumren efter flyttas upp.
+async function mergeCues(ai, bi) {
+  const a = state.cues[ai], b = state.cues[bi]; if (!a || !b) return;
+  const an = (a.f && a.f.no) || "?", bn = (b.f && b.f.no) || "?";
+  if (!confirm(`Slå ihop cue ${bn} med cue ${an}?\nAll information läggs ihop i cue ${an}, cue ${bn} försvinner och löpnumren efter flyttas upp.`)) return;
+  snapshot(`före ihopslagning av cue ${an} och ${bn}`, true);
+  ensureCueIds();
+  const af = a.f || (a.f = {}), bf = b.f || {};
+  const fa = parseTC(af.tc || ""), fb = parseTC(bf.tc || "");
+  Object.keys(bf).forEach(k => {
+    if (k === "no" || k === "missing" || k === "comments") return;
+    const col = state.columns.find(c => c.id === k), va = af[k], vb = bf[k];
+    if (!vb || va === vb) return;
+    if (!va) { af[k] = vb; return; }
+    if (k === "tc") { af.tc = fa != null && fb != null && fb < fa ? vb : va; return; }
+    if (k === "tcout") { const oa = parseTC(va), ob = parseTC(vb); af.tcout = oa != null && ob != null && ob > oa ? vb : va; return; }
+    if (k === "temp") { (a.sub = a.sub || []).push({ temp: vb, tc: bf.tc || "", tcout: bf.tcout || "" }); return; }
+    if (k === "filename") return;
+    const t = col ? col.type : "text";
+    if (["check", "select", "assign", "ts", "date", "sec", "no", "vercheck", "stemcheck", "dur"].includes(t)) return; // a:s värde vinner
+    af[k] = va + " / " + vb;
+  });
+  if (b.sub && b.sub.length) a.sub = (a.sub || []).concat(b.sub);
+  if (cloudActive()) {
+    await cloudMoveComments(b.id, a.id);
+    const tb = techVals[b.id] || {}, ta = techVals[a.id] || {};
+    for (const [k, v] of Object.entries(tb)) if (v && !ta[k]) { (techVals[a.id] = techVals[a.id] || {})[k] = v; cloudSetTech(a.id, k, v); }
+  } else {
+    const ca = ensureCm(a), cb = ensureCm(b);
+    ca.thread = ca.thread.concat(cb.thread).sort((x, y) => (x.ts || "").localeCompare(y.ts || ""));
+    if (cb.status === "open" || (cb.status === "answered" && !ca.status)) ca.status = cb.status;
+  }
+  if (bf.comments) af.comments = (af.comments ? af.comments + " · " : "") + bf.comments;
+  af.comments = (af.comments ? af.comments + " · " : "") + `Ihopslagen med cue ${bn}`;
+  state.cues.splice(bi, 1);
+  renumberAfterRemoval(bn, bi);
+  touchTs(a); render(); toast(`Cue ${bn} ihopslagen med cue ${an}`);
+}
+function renumberAfterRemoval(removedNo, pos) {
+  const m = String(removedNo).match(/^(\d+)([a-z]?)$/i); if (!m) return;
+  const n = parseInt(m[1], 10);
+  if (!m[2]) { // rent löpnummer borttaget: alla senare med högre nummer flyttas upp ett steg
+    state.cues.forEach((c, k) => {
+      if (k < pos) return;
+      const mm = ((c.f && c.f.no) || "").match(/^(\d+)(.*)$/);
+      if (mm && parseInt(mm[1], 10) > n) c.f.no = String(parseInt(mm[1], 10) - 1) + mm[2];
+    });
+  } else { // t.ex. 7b borttagen: ensam 7a blir 7, annars flyttas bokstäverna efter upp
+    const same = state.cues.filter(c => new RegExp("^" + n + "[a-z]$", "i").test((c.f && c.f.no) || ""));
+    if (same.length === 1) same[0].f.no = String(n);
+    else same.forEach(c => { const l = c.f.no.slice(-1).toLowerCase(); if (l > m[2].toLowerCase()) c.f.no = n + String.fromCharCode(l.charCodeAt(0) - 1); });
+  }
 }
 function updF(i, colId, v) {
   const cue = state.cues[i];
@@ -3348,6 +3424,7 @@ function applyReconcile(rows, src, opt) {
     out.push(nc); nNew++;
   });
   state.cues = out;
+  if (/^AAF /.test(src)) state.fnMode = "temp"; // efter AAF-import vill man se tempnamnen
   missing.forEach(e => { if (!e.q.f) e.q.f = {}; e.q.f.missing = "x"; e.q.f.comments = (e.q.f.comments ? e.q.f.comments + " · " : "") + `Saknas i importen ${src}`; });
   render(); save();
   toast(`${nUpd} cuer uppdaterade · ${nNew} nya` + (missing.length ? ` · ${missing.length} markerade som saknade` : ""));
@@ -4529,6 +4606,11 @@ async function cloudDeleteComment(rid) {
   const { error } = await sb.from("comments").delete().eq("id", rid);
   if (error) { toast("Kunde inte ta bort: " + error.message); return; }
   await reloadComments(); render(); renderCmThread();
+}
+async function cloudMoveComments(fromId, toId) {
+  const { error } = await sb.from("comments").update({ cue_id: toId }).eq("project_id", cloud.project.id).eq("cue_id", fromId);
+  if (error) { toast("Kunde inte flytta kommentarer: " + error.message); return; }
+  await reloadComments();
 }
 async function cloudResetComments(cueId) {
   const { error } = await sb.from("comments").delete().eq("project_id", cloud.project.id).eq("cue_id", cueId);
