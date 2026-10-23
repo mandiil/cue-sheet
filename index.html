@@ -3306,6 +3306,20 @@ async function auddLookup(samples, sr) {
   if (!r.ok) throw new Error((j && j.error) || ("AudD-fel " + r.status));
   return j;
 }
+// Välj det 12 s-fönster som har mest energi (så vi inte skickar tyst intro). energy(i) = energi per block, blocksPerSec = block/s.
+function auddBestWindow(energy, blocksPerSec, sec) {
+  const w = Math.min(energy.length, Math.round(sec * blocksPerSec));
+  if (w <= 0 || energy.length <= w) return 0;
+  let sum = 0; for (let i = 0; i < w; i++) sum += energy[i];
+  let best = 0, bestSum = sum;
+  for (let i = w; i < energy.length; i++) { sum += energy[i] - energy[i - w]; if (sum > bestSum) { bestSum = sum; best = i - w + 1; } }
+  return best;
+}
+function auddBestStart(samples, sr, sec) { // för råa samples: energi per 0,5 s-block
+  const blk = Math.max(1, Math.floor(sr / 2)), n = Math.floor(samples.length / blk), e = new Float64Array(n);
+  for (let i = 0; i < n; i++) { let a = 0; const o = i * blk; for (let j = 0; j < blk; j += 4) a += samples[o + j] * samples[o + j]; e[i] = a; }
+  return auddBestWindow(e, 2, sec) * blk;
+}
 function auddPick(res) { // plocka ut det vi visar/sparar ur AudD-svaret
   const h = res && res.result; if (!h) return null;
   return { artist: h.artist || "", title: h.title || "", album: h.album || "", release: h.release_date || "", label: h.label || "",
@@ -3330,13 +3344,17 @@ function showAudd(res, hit, onUse, sub) {
 }
 function closeAudd() { document.getElementById("audd-overlay").classList.remove("open"); }
 function auddUse() { if (auddCur && auddCur.onUse) auddCur.onUse(auddCur.hit); closeAudd(); }
-// Tidslinje: 12 s ur det markerade klippet (AudD rekommenderar 2–12 s) (en bit in i klippet, för att slippa fade-in)
+// Tidslinje: de starkaste 12 s ur det markerade klippet (AudD rekommenderar 2–12 s; tysta intron ger ingen träff) (en bit in i klippet, för att slippa fade-in)
 async function tlAudd() {
   if (tl.sel < 0) { toast("Klicka på ett klipp i tidslinjen först"); return; }
   const c = tl.clips[tl.sel];
   if (!tl.reader || !c.chans || !c.chans.length) { tlNeedAudio(true, true); toast("Ljudet ligger i AAF-filen – klicka den lysande knappen Öppna AAF för ljud…"); return; }
   const ch = c.chans[0], total = Math.floor((c.outF - c.inF) / state.timeline.fps * ch.sr), n = Math.min(12 * ch.sr, total);
-  const from = total > n ? Math.floor((total - n) * 0.35) : 0;
+  let from = total > n ? Math.floor((total - n) * 0.35) : 0;
+  if (c.pk && c.pk.length) { // starkaste 12 s enligt vågformen (TL_PPS värden/s)
+    const e = Array.from(c.pk, v => v * v);
+    from = Math.min(total - n, Math.round(auddBestWindow(e, TL_PPS, 12) / TL_PPS * ch.sr));
+  }
   const btn = document.getElementById("tl-audd"); btn.disabled = true; tlStatus("Frågar AudD…");
   try {
     const samples = await tl.reader.readPcm(ch, ch.offset + from, n);
@@ -3355,7 +3373,7 @@ async function archiveAudd() {
   archStatus(`Läser ${file.name} och frågar AudD…`);
   try {
     const { samples, sr } = await fpGetMono(file, file.name);
-    const n = Math.min(12 * sr, samples.length), from = samples.length > n ? Math.floor((samples.length - n) * 0.35) : 0;
+    const n = Math.min(12 * sr, samples.length), from = auddBestStart(samples, sr, 12);
     const res = await auddLookup(samples.subarray(from, from + n), sr), hit = auddPick(res);
     showAudd(res, hit, null, file.name);
     archStatus(hit ? `AudD: ${hit.artist} – ${hit.title}${hit.album ? " (" + hit.album + ")" : ""}` : "AudD: ingen träff");
@@ -3370,7 +3388,7 @@ async function detAudd(i) {
     if (!detMonoCache || detMonoCache.file !== detFile) { const m = await fpGetMono(detFile, "Mixdown"); detMonoCache = { file: detFile, samples: m.samples, sr: m.sr }; }
     const { samples, sr } = detMonoCache;
     const a = Math.floor(r.start * sr), b = Math.min(samples.length, Math.floor(r.end * sr)), total = b - a, n = Math.min(12 * sr, total);
-    const from = a + (total > n ? Math.floor((total - n) * 0.35) : 0);
+    const from = a + auddBestStart(samples.subarray(a, b), sr, 12);
     const res = await auddLookup(samples.subarray(from, from + n), sr), hit = auddPick(res);
     showAudd(res, hit, hit ? (h => { r.audd = h; renderDetected(); }) : null, `cue ${i + 1} · ${secToTC(r.start)}`);
     document.getElementById("audd-use").textContent = "Använd som namn på cuen";
