@@ -560,6 +560,19 @@ const SUPA = {
 </div>
 <div id="print-area"></div>
 
+<!-- AudD: bekräfta extern sökning -->
+<div id="auddc-overlay" class="overlay" onmousedown="auddcDown=(event.target===this)" onmouseup="if(auddcDown&&event.target===this)auddConfirmAnswer(false);auddcDown=false">
+  <div class="cm-box" role="dialog" aria-modal="true" style="max-width:440px">
+    <div class="cm-head"><b>Extern sökning (AudD)</b><span class="cm-sub" id="auddc-sub"></span></div>
+    <div id="auddc-body" style="padding:14px 18px;line-height:1.5"></div>
+    <div class="cm-foot">
+      <button class="primary" id="auddc-ok" onclick="auddConfirmAnswer(true)">Sök</button>
+      <div class="spacer"></div>
+      <button onclick="auddConfirmAnswer(false)">Avbryt</button>
+    </div>
+  </div>
+</div>
+
 <!-- AudD-resultat (nät-identifiering) -->
 <div id="audd-overlay" class="overlay" onmousedown="auddDown=(event.target===this)" onmouseup="if(auddDown&&event.target===this)closeAudd();auddDown=false">
   <div class="cm-box" role="dialog" aria-modal="true" style="max-width:520px">
@@ -3294,8 +3307,27 @@ function auddWav(samples, sr) { // 16-bit mono WAV, nedsamplad till ~22 kHz
   }
   return new Blob([buf], { type: "audio/wav" });
 }
-async function auddLookup(samples, sr) {
+// Bekräftelseruta före varje extern sökning: kostar 1 sökning, visar hur många som är kvar
+let auddcDown = false, auddcResolve = null;
+function auddConfirmAnswer(ok) { document.getElementById("auddc-overlay").classList.remove("open"); if (auddcResolve) { const r = auddcResolve; auddcResolve = null; r(ok); } }
+async function auddConfirm(label) {
+  let st = null;
+  try { const { data } = await sb.rpc("audd_stats"); st = data; } catch (e) {}
+  const left = st ? Math.max(0, st.day_cap - st.mine_today) : null, potLeft = st ? Math.max(0, st.total_cap - st.total) : null;
+  document.getElementById("auddc-sub").textContent = label || "";
+  document.getElementById("auddc-body").innerHTML =
+    `<div>Sökningen skickas till AudD på nätet och <b>kostar 1 sökning</b>.</div>` +
+    (st ? `<div style="margin-top:8px;font-size:18px"><b>${left}</b> <span style="color:var(--muted)">av ${st.day_cap} kvar för dig idag</span></div>
+           <div style="color:var(--muted)">Gemensam pott: ${potLeft} av ${st.total_cap} kvar</div>` +
+          (left === 0 ? `<div style="margin-top:8px;color:#d9534f">Dina sökningar för dygnet är slut – försök igen senare.</div>` : "")
+        : `<div style="color:var(--muted);margin-top:8px">Kunde inte hämta saldot.</div>`);
+  document.getElementById("auddc-ok").disabled = left === 0 || potLeft === 0;
+  document.getElementById("auddc-overlay").classList.add("open");
+  return new Promise(res => { auddcResolve = res; });
+}
+async function auddLookup(samples, sr, label) {
   if (!sb || !cloud.user) throw new Error("Logga in för att använda AudD");
+  if (!(await auddConfirm(label))) { const e = new Error("Avbrutet"); e.cancelled = true; throw e; }
   const { data: { session } } = await sb.auth.getSession();
   if (!session) throw new Error("Inte inloggad");
   const fd = new FormData();
@@ -3358,11 +3390,11 @@ async function tlAudd() {
   const btn = document.getElementById("tl-audd"); btn.disabled = true; tlStatus("Frågar AudD…");
   try {
     const samples = await tl.reader.readPcm(ch, ch.offset + from, n);
-    const res = await auddLookup(samples, ch.sr), hit = auddPick(res);
+    const res = await auddLookup(samples, ch.sr, c.name), hit = auddPick(res);
     const ci = tlCueFor(c), q = ci >= 0 ? state.cues[ci] : null;
     showAudd(res, hit, q ? (h => { if (!q.f) q.f = {}; q.f.temp = `${h.artist} – ${h.title}`; q.f.comments = (q.f.comments ? q.f.comments + " · " : "") + `AudD: ${h.artist} – ${h.title}${h.album ? " (" + h.album + ")" : ""}${h.spotify ? " " + h.spotify : ""}`; touchTs(q); render(); toast(`Cue ${q.f.no || ""}: Temp = ${q.f.temp}`); }) : null,
              `${c.name}` + (q ? ` → cue ${(q.f && q.f.no) || ""}` : ""));
-  } catch (e) { toast(String(e.message || e)); }
+  } catch (e) { if (!e.cancelled) toast(String(e.message || e)); }
   btn.disabled = false; tlStatus("");
 }
 // SongSpot: extern sökning på vald fil (12 s en bit in i filen)
@@ -3374,10 +3406,10 @@ async function archiveAudd() {
   try {
     const { samples, sr } = await fpGetMono(file, file.name);
     const n = Math.min(12 * sr, samples.length), from = auddBestStart(samples, sr, 12);
-    const res = await auddLookup(samples.subarray(from, from + n), sr), hit = auddPick(res);
+    const res = await auddLookup(samples.subarray(from, from + n), sr, file.name), hit = auddPick(res);
     showAudd(res, hit, null, file.name);
     archStatus(hit ? `AudD: ${hit.artist} – ${hit.title}${hit.album ? " (" + hit.album + ")" : ""}` : "AudD: ingen träff");
-  } catch (e) { archStatus("AudD: " + (e.message || e)); toast(String(e.message || e)); }
+  } catch (e) { if (e.cancelled) { archStatus(""); return; } archStatus("AudD: " + (e.message || e)); toast(String(e.message || e)); }
 }
 // Auto-detektering: 12 s ur region i
 let detMonoCache = null;
@@ -3389,11 +3421,11 @@ async function detAudd(i) {
     const { samples, sr } = detMonoCache;
     const a = Math.floor(r.start * sr), b = Math.min(samples.length, Math.floor(r.end * sr)), total = b - a, n = Math.min(12 * sr, total);
     const from = a + auddBestStart(samples.subarray(a, b), sr, 12);
-    const res = await auddLookup(samples.subarray(from, from + n), sr), hit = auddPick(res);
+    const res = await auddLookup(samples.subarray(from, from + n), sr, `cue ${i + 1} · ${secToTC(r.start)}`), hit = auddPick(res);
     showAudd(res, hit, hit ? (h => { r.audd = h; renderDetected(); }) : null, `cue ${i + 1} · ${secToTC(r.start)}`);
     document.getElementById("audd-use").textContent = "Använd som namn på cuen";
     detStatus(hit ? `AudD: ${hit.artist} – ${hit.title}` : "AudD: ingen träff");
-  } catch (e) { detStatus("AudD: " + (e.message || e)); toast(String(e.message || e)); }
+  } catch (e) { if (e.cancelled) { detStatus(""); return; } detStatus("AudD: " + (e.message || e)); toast(String(e.message || e)); }
 }
 
 // ---------- Avstämning vid import ----------
