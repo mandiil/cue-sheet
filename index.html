@@ -121,6 +121,7 @@ const SUPA = {
   .missing-mark { color: #d9534f; cursor: pointer; margin-left: 4px; font-size: 13px; }
   #tl-panel { display: none; }
   #tl-panel.open { display: block; }
+  #tl-panel.open.pinned { position: sticky; top: 6px; z-index: 40; box-shadow: 0 10px 30px rgba(0,0,0,.45); }
   #tl-scroll { position: relative; overflow-x: auto; overflow-y: hidden; background: #0f1114; border: 1px solid var(--border); border-radius: 6px; outline: none; }
   #tl-scroll:focus { border-color: var(--accent); }
   #tl-spacer { height: 1px; }
@@ -681,6 +682,7 @@ const SUPA = {
     <button onclick="tlZoom(1.6)">Zooma in +</button>
     <button onclick="tlZoom(1/1.6)">Zooma ut −</button>
     <button onclick="tlZoomAll()">Allt</button>
+    <label style="display:flex;align-items:center;gap:5px;font-size:12px;color:var(--muted);cursor:pointer" title="Tidslinjen ligger kvar högst upp medan listan scrollar, och listan scrollar själv till cuen du pekar på"><input type="checkbox" id="tl-pin" onchange="tlPin(this.checked)"> Fäst &amp; följ i listan</label>
     <button id="tl-open-btn" onclick="document.getElementById('tl-aaf-in').click()" title="Ljudet ligger i AAF-filen och sparas inte i projektet – öppna filen igen för att lyssna">Öppna AAF för ljud…</button>
     <input type="file" id="tl-aaf-in" accept=".aaf" style="display:none" onchange="tlOpenFile(event)">
     <button onclick="toggleTimeline()">Stäng</button>
@@ -3832,6 +3834,7 @@ function toggleTimeline() {
   if (p.classList.contains("open")) {
     closeOtherPanels("tl-panel");
     tlFromState(); tlResize(); if (!tl.pxs || tl.pxs === 20) tlZoomAll(); tlDraw(); tlInfo();
+    tlRestorePin();
     p.scrollIntoView({ behavior: "smooth", block: "start" });
   } else tlStop();
 }
@@ -3871,7 +3874,7 @@ async function tlBuild(reader, c, tracks) {
   state.timeline = { seq: c.name, start: c.start, fps: c.fps, file: aafFileName, tracks: tracks.map(t => t.name),
                      clips: raw.map(r => ({ name: r.name, inF: r.inF, outF: r.outF, lane: r.lane, pk: "" })) };
   tl.clips = raw; tl.sig = tlSig(); tl.pos = 0; tl.sel = -1;
-  if (!tlOpen()) { document.getElementById("tl-panel").classList.add("open"); closeOtherPanels("tl-panel"); }
+  if (!tlOpen()) { document.getElementById("tl-panel").classList.add("open"); closeOtherPanels("tl-panel"); tlRestorePin(); }
   tlResize(); tlZoomAll(); tlDraw(); tlInfo();
   const gen = ++tl.gen;
   for (let i = 0; i < raw.length; i++) {
@@ -4010,7 +4013,21 @@ function tlCueFor(c) {
 function tlCueRow(i) { return i < 0 ? null : [...document.querySelectorAll("#cue-body tr:not(.sub-row)")][i] || null; }
 function tlHoverCue(ci) {
   document.querySelectorAll("#cue-body tr.tl-hover").forEach(tr => tr.classList.remove("tl-hover"));
-  const tr = tlCueRow(ci); if (tr) tr.classList.add("tl-hover");
+  const tr = tlCueRow(ci); if (!tr) return;
+  tr.classList.add("tl-hover");
+  if (tl.pin) { // fäst läge: listan scrollar till cuen så att raden syns under tidslinjen
+    const panel = document.getElementById("tl-panel"), ph = panel.getBoundingClientRect().bottom, r = tr.getBoundingClientRect();
+    if (r.top < ph + 8 || r.bottom > window.innerHeight - 8) window.scrollBy({ top: r.top - ph - 60, behavior: "smooth" });
+  }
+}
+function tlRestorePin() {
+  let pin = false; try { pin = !!localStorage.getItem("tl-pin"); } catch (e) {}
+  document.getElementById("tl-pin").checked = pin; tlPin(pin);
+}
+function tlPin(on) {
+  tl.pin = on;
+  document.getElementById("tl-panel").classList.toggle("pinned", on);
+  try { localStorage.setItem("tl-pin", on ? "1" : ""); } catch (e) {}
 }
 function tlFlashCue(c) {
   const best = tlCueFor(c);
