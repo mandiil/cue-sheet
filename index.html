@@ -110,6 +110,13 @@ const SUPA = {
 
   #detect-panel { display: none; }
   #detect-panel.open { display: block; }
+  #tl-panel { display: none; }
+  #tl-panel.open { display: block; }
+  #tl-scroll { position: relative; overflow-x: auto; overflow-y: hidden; background: #0f1114; border: 1px solid var(--border); border-radius: 6px; outline: none; }
+  #tl-scroll:focus { border-color: var(--accent); }
+  #tl-spacer { height: 1px; }
+  #tl-canvas { position: sticky; left: 0; display: block; cursor: crosshair; }
+  tr.tl-flash td { background: rgba(212, 168, 67, 0.28) !important; transition: background 0.3s; }
   #hist-panel { display: none; }
   #hist-panel.open { display: block !important; }
   #arch-panel { display: none; }
@@ -618,6 +625,27 @@ const SUPA = {
   <div id="det-results"></div>
 </div>
 
+<div class="panel" id="tl-panel">
+  <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px">
+    <label style="margin:0">Tidslinje</label>
+    <span id="tl-info" class="col-hint" style="margin:0"></span>
+    <span style="flex:1"></span>
+    <button id="tl-play" class="primary" onclick="tlToggle()" title="Mellanslag">▶ Spela</button>
+    <span id="tl-time" style="font-family:'SF Mono',Menlo,monospace;min-width:96px;text-align:center">--:--:--:--</span>
+    <button onclick="tlZoom(1.6)">Zooma in +</button>
+    <button onclick="tlZoom(1/1.6)">Zooma ut −</button>
+    <button onclick="tlZoomAll()">Allt</button>
+    <button id="tl-open-btn" onclick="document.getElementById('tl-aaf-in').click()" title="Ljudet ligger i AAF-filen och sparas inte i projektet – öppna filen igen för att lyssna">Öppna AAF för ljud…</button>
+    <input type="file" id="tl-aaf-in" accept=".aaf" style="display:none" onchange="tlOpenFile(event)">
+    <button onclick="toggleTimeline()">Stäng</button>
+  </div>
+  <div id="tl-scroll" tabindex="0">
+    <div id="tl-spacer"></div>
+    <canvas id="tl-canvas"></canvas>
+  </div>
+  <div id="tl-status" class="col-hint">Importera en AAF (Importera EDL/XML/AAF…) så byggs tidslinjen av musikspåren. Klicka i tidslinjen för att flytta spelhuvudet · klicka på ett klipp för att hitta dess cue-rad · shift+scroll för att panorera.</div>
+</div>
+
 <div class="panel" id="arch-panel">
   <label style="margin-bottom:10px">SongSpot — hitta ursprunget till omdöpta skisser</label>
   <div class="det-grid" style="grid-template-columns:2fr 1fr 1fr 2fr 1fr">
@@ -661,6 +689,7 @@ const SUPA = {
 
 <div class="panel toolbar">
   <button class="admin-only" onclick="toggleDetect()">Auto-detektera cuer…</button>
+  <button onclick="toggleTimeline()">Tidslinje</button>
   <button class="admin-only" onclick="toggleArchive()">SongSpot</button>
   <button class="admin-only" onclick="document.getElementById('edl-in').click()">Importera EDL/XML/AAF…</button>
   <input type="file" id="edl-in" accept=".edl,.xml,.txt,.aaf" style="display:none" onchange="importEdlXml(event)">
@@ -1599,7 +1628,7 @@ function moveNote(i, d) {
 
 // ---------- Panelväxling: bara en öppen åt gången ----------
 function closeOtherPanels(keepId) {
-  ["col-panel", "detect-panel", "hist-panel", "arch-panel"].forEach(id => {
+  ["col-panel", "detect-panel", "hist-panel", "arch-panel", "tl-panel"].forEach(id => {
     if (id !== keepId) document.getElementById(id).classList.remove("open");
   });
 }
@@ -2336,7 +2365,7 @@ function snapshot(label, force) {
   try {
     const HKEY = HKEYf();
     const hist = JSON.parse(localStorage.getItem(HKEY) || "[]");
-    const cur = JSON.stringify(state);
+    const cur = JSON.stringify(state, (k, v) => k === "timeline" ? undefined : v); // tidslinjens vågformer hålls utanför historiken
     if (hist.length && hist[hist.length - 1].s === cur) return; // ingen ändring
     if (!force && Date.now() - lastSnapTime < 120000) return;   // max var 2:e min för auto
     hist.push({ t: Date.now(), label: label || "auto", n: state.cues.length, s: cur });
@@ -2362,6 +2391,7 @@ function applyState(data) {
     if (el) el.value = v;
   });
   render(); renderCols();
+  try { tlFromState(); } catch (e) {}
 }
 
 function toggleHistory() {
@@ -2394,7 +2424,9 @@ function restoreSnapshot(i) {
     if (!hist[i]) return;
     if (!confirm(`Återställ till ${new Date(hist[i].t).toLocaleTimeString("sv-SE")} (${hist[i].n} cuer)? Nuvarande läge sparas också i historiken.`)) return;
     snapshot("före återställning", true);
+    const tl = state.timeline;
     applyState(JSON.parse(hist[i].s));
+    if (tl && !state.timeline) { state.timeline = tl; save(); }
     renderHistory();
     toast("Återställt");
   } catch (e) { toast("Kunde inte återställa"); }
@@ -3187,7 +3219,7 @@ class AafReader {
         const cp = await this.firstClip(ch);
         if (cp) {
           const m = cp[0x1101] ? this.mobs[aafHex(cp[0x1101].v)] : null;
-          if (m && !/^(TONE:|Filler$)/i.test(m.name)) res.push({ pos, len, name: m.name });
+          if (m && !/^(TONE:|Filler$)/i.test(m.name)) res.push({ pos, len, name: m.name, comp: ch });
         }
       }
       pos += len;
@@ -3197,12 +3229,15 @@ class AafReader {
   async compositions() {
     const h = this.find(this.dir[0], "Header-2"), ct = this.find(h, "Content-3b03");
     if (!ct) throw new Error("hittar inget innehåll (Header/Content)");
+    this.ct = ct;
     const comps = [];
+    this.byId = {};
     for (const m of this.vec(ct, "Mobs-1901")) {
       const p = await this.props(m);
       if (!p[0x4401]) continue;
       const kind = this.cls(m), name = p[0x4402] ? aafUtf16(p[0x4402].v) : "";
       this.mobs[aafHex(p[0x4401].v)] = { kind, name };
+      this.byId[aafHex(p[0x4401].v)] = m;
       if (kind === "CompositionMob") comps.push({ ent: m, name });
     }
     const out = [];
@@ -3223,15 +3258,104 @@ class AafReader {
     }
     return out;
   }
+
+  // ---- inbäddat ljud ----
+  rate(p, pid) {
+    if (!p[pid] || p[pid].v.length < 8) return null;
+    const D = new DataView(p[pid].v.buffer, p[pid].v.byteOffset, 8);
+    return [D.getInt32(0, true), D.getInt32(4, true) || 1];
+  }
+  async essenceIndex() {
+    if (this.ess) return this.ess;
+    this.ess = {};
+    for (const k of this.children(this.ct)) {
+      if (!k.name.startsWith("EssenceData")) continue;
+      const p = await this.props(k);
+      if (p[0x2701]) { const d = this.find(k, "Data-2702"); if (d) this.ess[aafHex(p[0x2701].v)] = d; }
+    }
+    return this.ess;
+  }
+  async allClips(ent, out, depth = 0) {
+    if (!ent || depth > 12) return out;
+    const k = this.cls(ent), p = await this.props(ent);
+    if (k === "SourceClip") out.push(p);
+    for (const ch of this.vec(ent, "InputSegments-b02")) await this.allClips(ch, out, depth + 1);
+    if (k === "Selector") await this.allClips(this.ref(ent, p, 0xf02), out, depth + 1);
+    if (k === "Sequence") for (const ch of this.vec(ent, "Components-1001")) await this.allClips(ch, out, depth + 1);
+    return out;
+  }
+  async slotById(mob, sid) {
+    for (const s of this.vec(mob, "Slots-4403")) { const p = await this.props(s); if (p[0x4801] && aafInt(p[0x4801].v) === sid) return { ent: s, p }; }
+    return null;
+  }
+  // kanaler för en komponent på kompositionsspåret → [{data, sr, bits, offset(samples), total(samples), key}]
+  async channels(comp, slotRate) {
+    const ess = await this.essenceIndex(), out = [], seen = new Set();
+    for (const sc of await this.allClips(comp, [])) {
+      if (!sc[0x1101]) continue;
+      let mid = aafHex(sc[0x1101].v), sid = sc[0x1102] ? aafInt(sc[0x1102].v) : 1;
+      let sec = (sc[0x1201] ? aafInt(sc[0x1201].v) : 0) / slotRate, guard = 0, found = null;
+      while (guard++ < 8) {
+        const mob = this.byId[mid]; if (!mob) break;
+        const kind = this.cls(mob);
+        if (kind === "SourceMob") {
+          const data = ess[mid]; if (!data) break;
+          const mp = await this.props(mob), d = this.ref(mob, mp, 0x4701); if (!d) break;
+          const dp = await this.props(d); if (this.cls(d) !== "PCMDescriptor" || !dp[0x3d03]) break;
+          const sr = this.rate(dp, 0x3d03), srate = sr[0] / sr[1], bits = dp[0x3d01] ? aafInt(dp[0x3d01].v) : 16;
+          const slots = this.vec(mob, "Slots-4403");
+          if (slots.length) { const sp = await this.props(slots[0]); const r = this.rate(sp, 0x4b01) || [srate, 1]; sec += (sp[0x4b02] ? aafInt(sp[0x4b02].v) : 0) * r[1] / r[0]; }
+          found = { data, sr: srate, bits, offset: Math.round(sec * srate), total: Math.floor(data.size / (bits / 8)), key: mid + ":" + Math.round(sec * srate) };
+          break;
+        }
+        const slot = await this.slotById(mob, sid); if (!slot) break;
+        const r = this.rate(slot.p, 0x4b01) || [25, 1], seg = this.ref(slot.ent, slot.p, 0x4803);
+        const cp = await this.firstClip(seg); if (!cp || !cp[0x1101]) break;
+        sec += (cp[0x1201] ? aafInt(cp[0x1201].v) : 0) * r[1] / r[0];
+        mid = aafHex(cp[0x1101].v); sid = cp[0x1102] ? aafInt(cp[0x1102].v) : 1;
+      }
+      if (found && !seen.has(found.key) && out.length < 2) { seen.add(found.key); out.push(found); }
+    }
+    return out;
+  }
+  async essChain(data) {
+    if (!this.chains) this.chains = new Map();
+    if (!this.chains.has(data)) this.chains.set(data, await this.chain(data.start));
+    return this.chains.get(data);
+  }
+  // läser n samples från en kanal → Float32Array (bara de sektorer som behövs)
+  async readPcm(ch, from, n) {
+    const bps = ch.bits / 8, chain = await this.essChain(ch.data);
+    from = Math.max(0, Math.floor(from)); n = Math.max(0, Math.min(Math.floor(n), ch.total - from));
+    const out = new Float32Array(n); if (!n) return out;
+    let pos = from * bps, need = n * bps; const parts = [];
+    while (need > 0) {
+      const si = Math.floor(pos / this.ssz), so = pos % this.ssz;
+      if (si >= chain.length) break;
+      let sj = si, len = this.ssz - so;
+      while (len < need && sj + 1 < chain.length && chain[sj + 1] === chain[sj] + 1) { sj++; len += this.ssz; }
+      len = Math.min(len, need);
+      parts.push(await this.read((chain[si] + 1) * this.ssz + so, len));
+      pos += len; need -= len;
+    }
+    const raw = new Uint8Array(n * bps); let o = 0;
+    for (const p of parts) { raw.set(p.subarray(0, Math.min(p.length, raw.length - o)), o); o += p.length; }
+    if (bps === 2) { for (let i = 0; i < n; i++) { let v = raw[2 * i] | (raw[2 * i + 1] << 8); if (v & 0x8000) v -= 0x10000; out[i] = v / 32768; } }
+    else if (bps === 3) { for (let i = 0; i < n; i++) { let v = raw[3 * i] | (raw[3 * i + 1] << 8) | (raw[3 * i + 2] << 16); if (v & 0x800000) v -= 0x1000000; out[i] = v / 8388608; } }
+    else if (bps === 4) { const D = new DataView(raw.buffer); for (let i = 0; i < n; i++) out[i] = D.getInt32(4 * i, true) / 2147483648; }
+    else { for (let i = 0; i < n; i++) out[i] = (raw[i] - 128) / 128; }
+    return out;
+  }
 }
 
-let aafData = null, aafFileName = "", aafDown = false;
+let aafData = null, aafFileName = "", aafDown = false, aafReader = null;
 async function importAaf(file) {
   toast("Läser AAF…");
   try {
     const r = new AafReader(file);
     await r.open();
     const comps = await r.compositions();
+    aafReader = r;
     if (!comps.length) { toast("Inga sekvenser med klipp hittades i AAF-filen"); return; }
     // mest troliga sekvens först: samma namn som filen, annars flest klipp
     const stem = file.name.replace(/\.aaf$/i, "").toLowerCase();
@@ -3294,7 +3418,301 @@ function confirmAaf() {
   render();
   toast(`${clips.length} musikklipp importerade från ${aafFileName}`);
   if (c.fps !== fps()) toast(`Obs: AAF-filen är ${c.fps} fps, projektet ${fps()} fps`);
+  if (aafReader) tlBuild(aafReader, c, picked);
 }
+
+// ---------- Tidslinje: musikklippen som block på spår (Logic-liknande), vågform + uppspelning ur AAF:en ----------
+const TL_PPS = 10, TL_RULER = 22, TL_LANE = 56, TL_PAD = 4, TL_CHUNK = 4;
+const tl = { reader: null, clips: [], pxs: 20, pos: 0, playing: false, ctx: null, gain: null, sources: [], sched: new Set(),
+             t0: 0, pos0: 0, gen: 0, hover: -1, sel: -1, raf: 0, timer: 0, sig: null };
+function tlB64(u8) { let s = ""; for (let i = 0; i < u8.length; i += 8192) s += String.fromCharCode.apply(null, u8.subarray(i, i + 8192)); return btoa(s); }
+function tlU8(b64) { if (!b64) return null; const s = atob(b64), u = new Uint8Array(s.length); for (let i = 0; i < s.length; i++) u[i] = s.charCodeAt(i); return u; }
+function tlStatus(msg) { document.getElementById("tl-status").textContent = msg || "Klicka i tidslinjen för att flytta spelhuvudet · klicka på ett klipp för att hitta dess cue-rad · shift+scroll panorerar, Cmd/Ctrl+scroll zoomar · mellanslag = spela/paus."; }
+function tlSig() { const t = state.timeline; return t ? t.seq + "|" + t.file + "|" + t.clips.length : ""; }
+function tlOpen() { return document.getElementById("tl-panel").classList.contains("open"); }
+function tlDur() { const t = state.timeline; if (!t || !t.clips.length) return 60; return Math.max(...t.clips.map(c => c.outF)) / t.fps + 5; }
+function tlLanes() { return Math.max(1, ...tl.clips.map(c => c.lane + 1)); }
+function tlCur() { return tl.playing ? tl.pos0 + (tl.ctx.currentTime - tl.t0) : tl.pos; }
+
+function toggleTimeline() {
+  const p = document.getElementById("tl-panel");
+  p.classList.toggle("open");
+  if (p.classList.contains("open")) {
+    closeOtherPanels("tl-panel");
+    tlFromState(); tlResize(); if (!tl.pxs || tl.pxs === 20) tlZoomAll(); tlDraw(); tlInfo();
+    p.scrollIntoView({ behavior: "smooth", block: "start" });
+  } else tlStop();
+}
+function tlInfo() {
+  const t = state.timeline, el = document.getElementById("tl-info");
+  if (!t || !t.clips.length) { el.textContent = "Ingen tidslinje ännu."; }
+  else el.textContent = `${t.file} · ${t.clips.length} klipp · ${tlLanes()} spår · ${tl.reader ? "ljud laddat" : "inget ljud laddat (öppna AAF-filen för att lyssna)"}`;
+  document.getElementById("tl-open-btn").style.display = tl.reader ? "none" : "";
+  tlStatus(t && t.clips.length ? "" : "Importera en AAF (Importera EDL/XML/AAF…) så byggs tidslinjen av musikspåren.");
+}
+// synka runtime-klippen från projektet (utan ljud) när projektet byts/laddas
+function tlFromState() {
+  const sig = tlSig();
+  if (sig === tl.sig) return;
+  tl.sig = sig; tlStop(); tl.reader = null; tl.pos = 0; tl.sel = -1; tl.hover = -1;
+  const t = state.timeline;
+  tl.clips = t ? t.clips.map(c => ({ name: c.name, inF: c.inF, outF: c.outF, lane: c.lane, pk: tlU8(c.pk) })) : [];
+  if (tlOpen()) { tlResize(); tlZoomAll(); tlDraw(); tlInfo(); }
+}
+// bygg tidslinje + vågformer från en öppnad AAF (c = komposition, tracks = valda spår)
+async function tlBuild(reader, c, tracks) {
+  tlStop();
+  tl.reader = reader;
+  const raw = [];
+  tracks.forEach(t => t.clips.forEach(x => raw.push({
+    name: aafClipName(x.name), inF: Math.round(x.pos / t.rate * c.fps), outF: Math.round((x.pos + x.len) / t.rate * c.fps),
+    comp: x.comp, rate: t.rate, track: t.name, pk: null, chans: null })));
+  raw.sort((a, b) => a.inF - b.inF || a.outF - b.outF);
+  const laneEnd = []; // första lediga spår; upp till 1 s överlapp tillåts (övertoningar)
+  raw.forEach(r => {
+    let l = laneEnd.findIndex(e => e <= r.inF + c.fps);
+    if (l < 0) { l = laneEnd.length; laneEnd.push(0); }
+    laneEnd[l] = Math.max(laneEnd[l], r.outF); r.lane = l;
+  });
+  state.timeline = { seq: c.name, start: c.start, fps: c.fps, file: aafFileName, tracks: tracks.map(t => t.name),
+                     clips: raw.map(r => ({ name: r.name, inF: r.inF, outF: r.outF, lane: r.lane, pk: "" })) };
+  tl.clips = raw; tl.sig = tlSig(); tl.pos = 0; tl.sel = -1;
+  if (!tlOpen()) { document.getElementById("tl-panel").classList.add("open"); closeOtherPanels("tl-panel"); }
+  tlResize(); tlZoomAll(); tlDraw(); tlInfo();
+  const gen = ++tl.gen;
+  for (let i = 0; i < raw.length; i++) {
+    const r = raw[i];
+    tlStatus(`Läser ljud och vågformer… ${i + 1}/${raw.length}`);
+    try { r.chans = await reader.channels(r.comp, r.rate); } catch (e) { console.warn("kanaler", r.name, e); r.chans = []; }
+    if (tl.reader !== reader) return; // en annan fil har öppnats under tiden
+    if (r.chans.length) {
+      try {
+        const ch = r.chans[0], nPk = Math.max(1, Math.ceil((r.outF - r.inF) / c.fps * TL_PPS)), pk = new Uint8Array(nPk);
+        const spp = ch.sr / TL_PPS, total = Math.ceil(nPk * spp), CH = Math.floor(ch.sr * 30);
+        for (let s = 0; s < total; s += CH) {
+          const buf = await reader.readPcm(ch, ch.offset + s, Math.min(CH, total - s));
+          if (!buf.length) break;
+          for (let j = 0; j < buf.length; j++) {
+            const idx = Math.floor((s + j) / spp), v = Math.abs(buf[j]) * 255;
+            if (idx < nPk && v > pk[idx]) pk[idx] = v > 255 ? 255 : v | 0;
+          }
+        }
+        r.pk = pk; state.timeline.clips[i].pk = tlB64(pk);
+      } catch (e) { console.warn("vågform", r.name, e); }
+    }
+    if (i % 4 === 0) tlDraw();
+  }
+  tlDraw(); tlInfo(); save();
+}
+async function tlOpenFile(ev) {
+  const file = ev.target.files[0]; ev.target.value = "";
+  if (!file) return;
+  if (!state.timeline || !state.timeline.clips.length) { importAaf(file); return; }
+  tlStatus("Läser AAF…");
+  try {
+    const r = new AafReader(file); await r.open();
+    const comps = await r.compositions();
+    const t = state.timeline;
+    const c = comps.find(x => x.name === t.seq) || comps[0];
+    if (!c) throw new Error("inga sekvenser i filen");
+    const tracks = c.tracks.filter(x => t.tracks.includes(x.name));
+    if (!tracks.length) throw new Error("spåren " + t.tracks.join(", ") + " finns inte i den här filen");
+    aafFileName = file.name;
+    if (c.name !== t.seq) toast(`Obs: sekvensen heter ${c.name} – tidslinjen byggs om från den`);
+    await tlBuild(r, c, tracks);
+  } catch (e) { console.error(e); toast("Kunde inte läsa AAF: " + (e.message || e)); tlStatus(""); }
+}
+function tlResize() {
+  const sc = document.getElementById("tl-scroll"), cv = document.getElementById("tl-canvas");
+  const h = TL_RULER + tlLanes() * TL_LANE + 6, w = sc.clientWidth || 800, dpr = window.devicePixelRatio || 1;
+  document.getElementById("tl-spacer").style.width = Math.ceil(tlDur() * tl.pxs) + "px";
+  cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr);
+  cv.style.width = w + "px"; cv.style.height = h + "px";
+}
+function tlZoom(f) {
+  const sc = document.getElementById("tl-scroll");
+  const center = (sc.scrollLeft + sc.clientWidth / 2) / tl.pxs;
+  tl.pxs = Math.min(400, Math.max(0.2, tl.pxs * f));
+  tlResize(); sc.scrollLeft = center * tl.pxs - sc.clientWidth / 2; tlDraw();
+}
+function tlZoomAll() {
+  const sc = document.getElementById("tl-scroll");
+  tl.pxs = Math.max(0.2, ((sc.clientWidth || 800) - 4) / tlDur());
+  tlResize(); sc.scrollLeft = 0; tlDraw();
+}
+function tlStep() { const want = 90 / tl.pxs; return [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 1200].find(s => s >= want) || 1800; }
+function tlDraw() {
+  const cv = document.getElementById("tl-canvas"); if (!cv.width || !tlOpen()) return;
+  const g = cv.getContext("2d"), dpr = window.devicePixelRatio || 1;
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const sc = document.getElementById("tl-scroll"), x0 = sc.scrollLeft, W = cv.width / dpr, H = cv.height / dpr;
+  const t = state.timeline, fv = t ? t.fps : 25, start = t ? t.start : 0;
+  g.fillStyle = "#0f1114"; g.fillRect(0, 0, W, H);
+  const lanes = tlLanes();
+  for (let l = 0; l < lanes; l++) {
+    const y = TL_RULER + l * TL_LANE;
+    g.fillStyle = l % 2 ? "#14171c" : "#121419"; g.fillRect(0, y, W, TL_LANE);
+    g.fillStyle = "#262a32"; g.fillRect(0, y + TL_LANE - 1, W, 1);
+  }
+  const step = tlStep();
+  g.fillStyle = "#1b1e24"; g.fillRect(0, 0, W, TL_RULER);
+  for (let s = Math.floor(x0 / tl.pxs / step) * step; s * tl.pxs - x0 < W; s += step) {
+    const x = Math.round(s * tl.pxs - x0);
+    g.fillStyle = "#2c313a"; g.fillRect(x, TL_RULER, 1, H - TL_RULER);
+    g.fillStyle = "#4a505b"; g.fillRect(x, 0, 1, TL_RULER);
+    g.fillStyle = "#9aa0a8"; g.font = "10px 'SF Mono', Menlo, monospace";
+    g.fillText(fmtTC(start + Math.round(s * fv), fv), x + 4, 14);
+  }
+  tl.clips.forEach((c, i) => {
+    const xs = c.inF / fv * tl.pxs - x0, xe = c.outF / fv * tl.pxs - x0;
+    if (xe < 0 || xs > W) return;
+    const y = TL_RULER + c.lane * TL_LANE + TL_PAD, h = TL_LANE - TL_PAD * 2, w = Math.max(2, xe - xs);
+    g.fillStyle = i === tl.sel ? "#5a4a22" : i === tl.hover ? "#34435f" : "#273246";
+    g.beginPath(); g.roundRect ? g.roundRect(xs, y, w, h, 4) : g.rect(xs, y, w, h); g.fill();
+    g.strokeStyle = i === tl.sel ? "#d4a843" : "#3d4d6e"; g.lineWidth = 1; g.stroke();
+    if (c.pk && c.pk.length) {
+      g.fillStyle = i === tl.sel ? "#e2c070" : "#7fa3e6";
+      const n = c.pk.length, ppk = tl.pxs / TL_PPS, mid = y + h * 0.63, amp = h * 0.33;
+      const xa = Math.max(Math.floor(xs), 0), xb = Math.min(Math.ceil(xe), W);
+      for (let x = xa; x < xb; x++) {
+        const k0 = Math.max(0, Math.floor((x - xs) / ppk)), k1 = Math.max(k0 + 1, Math.floor((x + 1 - xs) / ppk));
+        let m = 0; for (let k = k0; k < k1 && k < n; k++) if (c.pk[k] > m) m = c.pk[k];
+        const a = Math.max(0.5, m / 255 * amp); g.fillRect(x, mid - a, 1, a * 2);
+      }
+    } else if (!tl.reader) {
+      g.fillStyle = "#3a4560"; g.fillRect(Math.max(xs, 0) + 2, y + h * 0.63, Math.min(xe, W) - Math.max(xs, 0) - 4, 1);
+    }
+    g.save(); g.beginPath(); g.rect(Math.max(xs, 0), y, Math.min(xe, W) - Math.max(xs, 0), h); g.clip();
+    g.fillStyle = "#e6e8ec"; g.font = "11px system-ui, sans-serif"; g.fillText(c.name, Math.max(xs, 0) + 5, y + 13);
+    g.restore();
+  });
+  for (let l = 0; l < lanes; l++) { g.fillStyle = "rgba(154,160,168,.55)"; g.font = "10px system-ui, sans-serif"; g.fillText("Spår " + (l + 1), 4, TL_RULER + l * TL_LANE + TL_LANE - 5); }
+  const px = tlCur() * tl.pxs - x0;
+  g.fillStyle = "#d4a843"; g.fillRect(px - 0.5, 0, 1.5, H);
+  g.beginPath(); g.moveTo(px - 5, 0); g.lineTo(px + 5, 0); g.lineTo(px, 7); g.closePath(); g.fill();
+  document.getElementById("tl-time").textContent = fmtTC(start + Math.round(tlCur() * fv), fv);
+}
+function tlClipAt(ev) {
+  const sc = document.getElementById("tl-scroll"), rect = ev.target.getBoundingClientRect();
+  const x = ev.clientX - rect.left, y = ev.clientY - rect.top, t = state.timeline, fv = t ? t.fps : 25;
+  const sec = (sc.scrollLeft + x) / tl.pxs;
+  if (y < TL_RULER) return { sec, i: -1 };
+  const lane = Math.floor((y - TL_RULER) / TL_LANE), f = sec * fv;
+  const i = tl.clips.findIndex(c => c.lane === lane && f >= c.inF && f <= c.outF);
+  return { sec, i };
+}
+function tlFlashCue(c) {
+  const t = state.timeline;
+  let best = -1, bestTc = -1;
+  state.cues.forEach((q, i) => {
+    if (!q.f || (q.f.filename || "") !== c.name) return;
+    const f = parseTC(q.f.tc || "", t.fps);
+    if (f == null || f > t.start + c.inF + 2) return;
+    if (f > bestTc) { bestTc = f; best = i; }
+  });
+  if (best < 0) { toast("Ingen cue-rad hittad för " + c.name); return; }
+  const tr = document.querySelectorAll("#cue-body tr")[best];
+  if (!tr) return;
+  tr.scrollIntoView({ behavior: "smooth", block: "center" });
+  tr.classList.add("tl-flash"); setTimeout(() => tr.classList.remove("tl-flash"), 1800);
+}
+function tlSeek(sec) {
+  const was = tl.playing; if (was) tlStop();
+  tl.pos = Math.max(0, sec);
+  if (was) tlPlay(); else tlDraw();
+}
+function tlToggle() { tl.playing ? tlStop() : tlPlay(); }
+async function tlPlay() {
+  if (!tl.clips.length) { toast("Ingen tidslinje – importera en AAF först"); return; }
+  if (!tl.reader) { toast("Ljudet ligger i AAF-filen – klicka Öppna AAF för ljud… för att lyssna"); return; }
+  if (!tl.ctx) {
+    tl.ctx = new (window.AudioContext || window.webkitAudioContext)();
+    tl.gain = tl.ctx.createGain(); tl.gain.gain.value = 0.9; tl.gain.connect(tl.ctx.destination);
+  }
+  await tl.ctx.resume();
+  if (tl.pos >= tlDur() - 5) tl.pos = 0;
+  tl.playing = true; tl.gen++; tl.t0 = tl.ctx.currentTime + 0.08; tl.pos0 = tl.pos; tl.sched = new Set(); tl.sources = [];
+  document.getElementById("tl-play").textContent = "⏸ Paus";
+  tlSchedule(); tl.timer = setInterval(tlSchedule, 1000);
+  const loop = () => { if (!tl.playing) return; tlFollow(); tlDraw(); tl.raf = requestAnimationFrame(loop); };
+  loop();
+}
+function tlStop() {
+  if (!tl.playing) return;
+  tl.pos = tlCur(); tl.playing = false; tl.gen++;
+  clearInterval(tl.timer); cancelAnimationFrame(tl.raf);
+  tl.sources.forEach(s => { try { s.stop(); } catch (e) {} }); tl.sources = [];
+  document.getElementById("tl-play").textContent = "▶ Spela";
+  tlDraw();
+}
+function tlFollow() {
+  const sc = document.getElementById("tl-scroll"), px = tlCur() * tl.pxs;
+  if (px < sc.scrollLeft || px > sc.scrollLeft + sc.clientWidth - 30) sc.scrollLeft = Math.max(0, px - 80);
+}
+function tlSchedule() {
+  if (!tl.playing) return;
+  const now = tlCur(), horizon = now + 9, fv = state.timeline.fps, gen = tl.gen;
+  tl.clips.forEach((c, i) => {
+    if (!c.chans || !c.chans.length) return;
+    const cs = c.inF / fv, ce = c.outF / fv;
+    if (ce <= now || cs >= horizon) return;
+    const k0 = Math.floor((Math.max(now, cs) - cs) / TL_CHUNK), k1 = Math.floor((Math.min(horizon, ce) - cs - 1e-6) / TL_CHUNK);
+    for (let k = k0; k <= k1; k++) {
+      const key = i + ":" + k;
+      if (tl.sched.has(key)) continue;
+      tl.sched.add(key);
+      tlLoadChunk(c, cs + k * TL_CHUNK, Math.min(ce, cs + (k + 1) * TL_CHUNK), cs, gen);
+    }
+  });
+}
+async function tlLoadChunk(c, a, b, cs, gen) {
+  const sr = c.chans[0].sr, n = Math.round((b - a) * sr);
+  if (n <= 0) return;
+  const bufs = [];
+  try { for (const ch of c.chans) bufs.push(await tl.reader.readPcm(ch, ch.offset + Math.round((a - cs) * sr), n)); }
+  catch (e) { console.warn("ljud", c.name, e); return; }
+  if (gen !== tl.gen || !tl.playing) return;
+  const ab = tl.ctx.createBuffer(bufs.length, n, sr);
+  bufs.forEach((b2, i) => ab.getChannelData(i).set(b2.subarray(0, n)));
+  const src = tl.ctx.createBufferSource(); src.buffer = ab; src.connect(tl.gain);
+  const when = tl.t0 + (a - tl.pos0), nowT = tl.ctx.currentTime;
+  if (when >= nowT) src.start(when);
+  else { const off = nowT - when; if (off >= b - a) return; src.start(nowT, off); }
+  tl.sources.push(src);
+  src.onended = () => { const j = tl.sources.indexOf(src); if (j >= 0) tl.sources.splice(j, 1); };
+}
+// händelser
+(function tlWire() {
+  const sc = document.getElementById("tl-scroll"), cv = document.getElementById("tl-canvas");
+  if (!sc || !cv) return;
+  sc.addEventListener("scroll", () => tlDraw());
+  sc.addEventListener("wheel", ev => {
+    if (ev.ctrlKey || ev.metaKey) { ev.preventDefault(); tlZoom(ev.deltaY < 0 ? 1.15 : 1 / 1.15); }
+    else if (ev.shiftKey && Math.abs(ev.deltaY) > Math.abs(ev.deltaX)) { ev.preventDefault(); sc.scrollLeft += ev.deltaY; }
+  }, { passive: false });
+  cv.addEventListener("mousemove", ev => {
+    const { sec, i } = tlClipAt(ev);
+    if (i !== tl.hover) { tl.hover = i; tlDraw(); }
+    const t = state.timeline;
+    cv.title = i >= 0 ? `${tl.clips[i].name}\n${fmtTC(t.start + tl.clips[i].inF, t.fps)} – ${fmtTC(t.start + tl.clips[i].outF, t.fps)}` : "";
+  });
+  cv.addEventListener("mouseleave", () => { if (tl.hover !== -1) { tl.hover = -1; tlDraw(); } });
+  cv.addEventListener("mousedown", ev => {
+    if (ev.button !== 0) return;
+    const { sec, i } = tlClipAt(ev);
+    tl.sel = i;
+    tlSeek(sec);
+    if (i >= 0) tlFlashCue(tl.clips[i]);
+    sc.focus({ preventScroll: true });
+  });
+  document.addEventListener("keydown", ev => {
+    if (ev.code !== "Space" || !tlOpen()) return;
+    const tg = ev.target, tag = (tg.tagName || "").toLowerCase();
+    if (tag === "input" || tag === "textarea" || tag === "select" || tg.isContentEditable) return;
+    ev.preventDefault(); tlToggle();
+  });
+  window.addEventListener("resize", () => { if (tlOpen()) { tlResize(); tlDraw(); } });
+})();
 
 function exportXlsx() {
   save();
