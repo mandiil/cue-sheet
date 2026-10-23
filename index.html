@@ -121,6 +121,7 @@ const SUPA = {
   .det-table td { min-width: 0; padding: 4px 10px; }
   .det-table .mono { font-family: "SF Mono", Menlo, Consolas, monospace; }
   .det-table tr.hover td { background: rgba(212,168,67,.18); }
+  .det-table tr.marked td { box-shadow: inset 3px 0 0 #3b82f6; }
   .det-table tr.unsel td { color: var(--muted); }
   .det-table tr.unsel td.mono { text-decoration: line-through; opacity: .7; }
   .views { display: flex; gap: 8px; margin-bottom: 12px; }
@@ -574,7 +575,8 @@ const SUPA = {
   <audio id="det-audio" preload="auto" style="display:none"></audio>
   <div id="det-tools" style="display:none;gap:8px;margin-top:10px;flex-wrap:wrap">
     <button onclick="splitAtPlayhead()">Dela cue vid spelhuvudet</button>
-    <button onclick="mergeSelected()">Slå ihop markerade till en</button>
+    <button onclick="mergeSelected()" title="Shift-klicka på cuer i vågformen (eller 'markera' i listan) och slå ihop dem">Slå ihop markerade</button>
+    <button id="det-undo" onclick="detUndoStep()" disabled title="Ångra senaste dela/slå ihop/omdetektering (Cmd+Z)">Ångra</button>
     <button onclick="detIdentify()">Identifiera innehåll (SongSpot)</button>
     <span style="flex:1"></span>
     <button onclick="zoomWave(0.5)">Zooma in +</button>
@@ -1781,6 +1783,7 @@ async function analyzeAudio() {
     const isWav = head[0] === 0x52 && head[1] === 0x49 && head[2] === 0x46 && head[3] === 0x46; // "RIFF"
     audioEnv = isWav ? await analyzeWavStreaming(file) : await analyzeViaDecode(file);
     audioEnv.name = file.name;
+    detected = []; detUndo = []; updateUndoBtn(); // ny fil = ny historik
     setupPlayback(file);
     detectRegions();
   } catch (e) {
@@ -1868,6 +1871,7 @@ async function analyzeViaDecode(file) {
 
 function detectRegions() {
   if (!audioEnv) return;
+  if (detected.length) detPushUndo(); // omdetektering går att ångra
   const thr = parseFloat(document.getElementById("det-thresh").value) || -45;
   const gapS = parseFloat(document.getElementById("det-gap").value) || 2;
   const minLen = parseFloat(document.getElementById("det-minlen").value) || 4;
@@ -1987,6 +1991,7 @@ function initWaveEvents() {
   const cv = document.getElementById("det-wave");
   cv.addEventListener("pointerdown", e => {
     if (!audioEnv || !detAudio) return;
+    if (e.shiftKey) { const i = regionAtX(e); if (i >= 0) toggleMark(i); return; } // shift-klick = markera för ihopslagning
     scrubbing = true;
     cv.setPointerCapture(e.pointerId);
     waveSeek(e);
@@ -2028,22 +2033,63 @@ function playRegion(i) {
   detAudio.play().then(() => requestAnimationFrame(playheadTick)).catch(() => {});
 }
 
+// ---------- Ångra ----------
+let detUndo = []; // stack av tidigare 'detected'-listor
+function detPushUndo() {
+  detUndo.push(JSON.stringify(detected.map(r => ({ start: r.start, end: r.end, sel: r.sel, mark: r.mark }))));
+  if (detUndo.length > 50) detUndo.shift();
+  updateUndoBtn();
+}
+function detUndoStep() {
+  if (!detUndo.length) { toast("Inget att ångra"); return; }
+  detected = JSON.parse(detUndo.pop());
+  renderDetected(); redrawWave(); updateUndoBtn();
+  toast("Ångrat");
+  detIdentify(true);
+}
+function updateUndoBtn() {
+  const b = document.getElementById("det-undo");
+  if (b) { b.disabled = !detUndo.length; b.textContent = detUndo.length ? `Ångra (${detUndo.length})` : "Ångra"; }
+}
+document.addEventListener("keydown", e => {
+  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "z" && !e.shiftKey
+      && document.getElementById("detect-panel").classList.contains("open")
+      && !/INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName)) { e.preventDefault(); detUndoStep(); }
+});
+
 // ---------- Slå ihop / dela ----------
+// Markering för ihopslagning (r.mark) är skild från kryssrutan (r.sel = ta med som cue)
+function toggleMark(i) {
+  detected[i].mark = !detected[i].mark;
+  renderDetected(); redrawWave();
+}
 function mergeSelected() {
-  const sel = detected.filter(r => r.sel);
-  if (sel.length < 2) { toast("Markera minst två cuer att slå ihop"); return; }
+  const idx = detected.map((r, i) => r.mark ? i : -1).filter(i => i >= 0);
+  if (idx.length < 2) { toast("Shift-klicka på minst två cuer i vågformen (eller använd ⤒ på en rad) för att slå ihop"); return; }
+  detPushUndo();
+  const sel = idx.map(i => detected[i]);
   const merged = { start: Math.min(...sel.map(r => r.start)), end: Math.max(...sel.map(r => r.end)), sel: true };
-  detected = detected.filter(r => !r.sel);
+  detected = detected.filter(r => !r.mark);
   detected.push(merged);
   detected.sort((a, b) => a.start - b.start);
   renderDetected(); redrawWave();
   toast(`${sel.length} cuer ihopslagna till en`);
   detIdentify(true);
 }
+function mergeWithPrev(i) {
+  if (i <= 0) return;
+  detPushUndo();
+  const a = detected[i - 1], b = detected[i];
+  detected.splice(i - 1, 2, { start: Math.min(a.start, b.start), end: Math.max(a.end, b.end), sel: true });
+  renderDetected(); redrawWave();
+  toast(`Cue ${i} och ${i + 1} ihopslagna`);
+  detIdentify(true);
+}
 function splitAtPlayhead() {
   const t = detPlayhead;
   const i = detected.findIndex(r => t > r.start && t < r.end);
   if (i < 0) { toast("Ställ spelhuvudet inuti en cue först (klicka i vågformen)"); return; }
+  detPushUndo();
   const r = detected[i];
   detected.splice(i, 1,
     { start: r.start, end: t, sel: true },
@@ -2058,13 +2104,13 @@ function renderDetected() {
   detHover = -1; // index kan ha ändrats (omdetektering, dela, slå ihop)
   if (!detected.length) { el.innerHTML = ""; return; }
   el.innerHTML = `<table class="det-table">
-    <thead><tr><th></th><th></th><th>#</th><th>TC In</th><th>TC Ut</th><th>Längd</th><th>Innehåll</th></tr></thead>
+    <thead><tr><th title="Ta med som cue">Ta med</th><th></th><th>#</th><th>TC In</th><th>TC Ut</th><th>Längd</th><th>Innehåll</th><th></th></tr></thead>
     <tbody>` +
-    detected.map((r, i) => `<tr data-i="${i}" class="${i === detHover ? "hover" : ""}${r.sel ? "" : " unsel"}"
+    detected.map((r, i) => `<tr data-i="${i}" class="${i === detHover ? "hover" : ""}${r.sel ? "" : " unsel"}${r.mark ? " marked" : ""}"
         onmouseenter="setDetHover(${i},true)" onmouseleave="setDetHover(-1,true)">
       <td><input type="checkbox" ${r.sel ? "checked" : ""} onchange="detected[${i}].sel=this.checked;this.closest('tr').classList.toggle('unsel',!this.checked);redrawWave()"></td>
       <td><button class="icon" title="Spela/pausa från cue-start" onclick="playRegion(${i})">▶</button></td>
-      <td>${i + 1}</td>
+      <td>${i + 1}${r.mark ? ` <span class="role-pill commenter" style="font-size:9px;padding:0 5px">vald</span>` : ""}</td>
       <td class="mono">${secToTC(r.start)}</td>
       <td class="mono">${secToTC(r.end)}</td>
       <td class="mono">${fmtSec(r.end - r.start)}</td>
@@ -2075,6 +2121,10 @@ function renderDetected() {
             `<option value="${mi}" ${r.matchSel === mi ? "selected" : ""}>${esc(m.name)} (${m.score})</option>`).join("") +
           `</select>`
         : `<span style="color:var(--muted)">${r.matches ? "okänd" : "–"}</span>`}</td>
+      <td style="white-space:nowrap">
+        ${i > 0 ? `<button class="icon" title="Slå ihop med föregående cue (${i})" onclick="mergeWithPrev(${i})">⤒ slå ihop med ${i}</button>` : ""}
+        <button class="icon" title="Markera/avmarkera för ihopslagning (samma som shift-klick i vågformen)" onclick="toggleMark(${i})">${r.mark ? "avmarkera" : "markera"}</button>
+      </td>
     </tr>`).join("") +
     `</tbody></table>
     <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap">
@@ -2206,9 +2256,9 @@ function drawWave(thr) {
     if (r.end < v.s || r.start > v.e) return;
     const x0 = tx(Math.max(r.start, v.s)), x1 = tx(Math.min(r.end, v.e));
     const hov = i === detHover;
-    g.fillStyle = hov ? "rgba(212,168,67,.38)" : r.sel ? "rgba(31,170,60,.25)" : "rgba(154,160,168,.14)";
+    g.fillStyle = hov ? "rgba(212,168,67,.38)" : r.mark ? "rgba(59,130,246,.30)" : r.sel ? "rgba(31,170,60,.25)" : "rgba(154,160,168,.14)";
     g.fillRect(x0, 0, x1 - x0, H);
-    if (hov) { g.strokeStyle = "#d4a843"; g.lineWidth = 1.5; g.strokeRect(x0 + .75, .75, x1 - x0 - 1.5, H - 1.5); }
+    if (hov || r.mark) { g.strokeStyle = hov ? "#d4a843" : "#3b82f6"; g.lineWidth = r.mark ? 2 : 1.5; g.strokeRect(x0 + 1, 1, x1 - x0 - 2, H - 2); }
     // nummer på regionen (om det får plats)
     if (x1 - x0 > 16) {
       g.font = (hov ? "bold " : "") + "11px sans-serif";
