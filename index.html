@@ -3181,10 +3181,11 @@ async function archiveIdentify() {
       if (best) results.push({ name: track.name, path: track.path, pos: Math.max(0, best.pos), dur: track.dur, score: best.c });
     });
     results.sort((a, b) => b.score - a.score);
-    archStatus(results.length
+    archStatus(`${file.name} → ` + (results.length
       ? `${results.length} möjliga ursprung hittade (${scanned} filer genomsökta)`
-      : `Ingen träff bland ${scanned} filer — ursprunget finns inte i arkivet ännu`);
+      : `ingen träff bland ${scanned} filer — ursprunget finns inte i arkivet ännu`));
     renderArchResults(results.slice(0, 20));
+    document.getElementById("arch-id-in").value = ""; // töm filväljaren efter sökningen
   } catch (e) { archStatus("Fel: " + (e.message || e)); }
 }
 
@@ -3408,7 +3409,8 @@ async function archiveAudd() {
     const n = Math.min(12 * sr, samples.length), from = auddBestStart(samples, sr, 12);
     const res = await auddLookup(samples.subarray(from, from + n), sr, file.name), hit = auddPick(res);
     showAudd(res, hit, null, file.name);
-    archStatus(hit ? `AudD: ${hit.artist} – ${hit.title}${hit.album ? " (" + hit.album + ")" : ""}` : "AudD: ingen träff");
+    archStatus(`${file.name} → ` + (hit ? `AudD: ${hit.artist} – ${hit.title}${hit.album ? " (" + hit.album + ")" : ""}` : "AudD: ingen träff"));
+    document.getElementById("arch-id-in").value = ""; // töm filväljaren så man inte söker igen av misstag
   } catch (e) { if (e.cancelled) { archStatus(""); return; } archStatus("AudD: " + (e.message || e)); toast(String(e.message || e)); }
 }
 // Auto-detektering: 12 s ur region i
