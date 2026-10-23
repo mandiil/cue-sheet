@@ -420,11 +420,24 @@ const SUPA = {
 <div id="inv-overlay" class="overlay" onmousedown="invDown=(event.target===this)" onmouseup="if(invDown&&event.target===this)closeInvite();invDown=false">
   <div class="cm-box" role="dialog" aria-modal="true" style="max-width:640px">
     <div class="cm-head"><b id="inv-title">Bjud in · medlemmar</b><span class="cm-sub" id="inv-sub"></span></div>
+    <div class="cm-input" id="inv-email-box" style="padding-top:14px;border-bottom:1px solid var(--border);padding-bottom:14px">
+      <label>Bjud in via mejl</label>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <input id="inv-email" type="email" placeholder="namn@exempel.se" style="flex:1;min-width:200px" onkeydown="if(event.key==='Enter')sendInviteEmail()">
+        <select id="inv-email-role" style="width:auto">
+          <option value="commenter">Read &amp; Comment</option>
+          <option value="editor">Read &amp; Write</option>
+        </select>
+        <button class="primary" onclick="sendInviteEmail()">Skicka inbjudan</button>
+      </div>
+      <div class="col-hint" style="margin-top:6px">Mottagaren får ett mejl från My Cue List med en länk som öppnar produktionen direkt. Länken gäller i 24 timmar.</div>
+    </div>
     <div class="cm-thread" id="inv-body"></div>
     <div class="cm-foot" style="flex-wrap:wrap">
       <span id="inv-foot-mgr" style="display:contents">
-        <button class="primary" onclick="createInvite('commenter')">Länk: Read &amp; Comment</button>
-        <button onclick="createInvite('editor')">Länk: Read &amp; Write</button>
+        <span class="totals">Eller kopiera en länk:</span>
+        <button onclick="createInvite('commenter')">Read &amp; Comment</button>
+        <button onclick="createInvite('editor')">Read &amp; Write</button>
       </span>
       <div class="spacer"></div>
       <button onclick="closeInvite()">Stäng</button>
@@ -3071,7 +3084,12 @@ async function onAuth(session) {
     bar("cloud-user").innerHTML = `<span style="color:var(--muted)">Inte inloggad – arbetar lokalt i webbläsaren.</span>`;
     bar("cloud-proj").textContent = "";
     if (qs("invite")) { localStorage.setItem("cuesheet-pending-invite", qs("invite")); bar("cloud-user").innerHTML += ` <b>Logga in för att ta emot inbjudan.</b>`; }
-    showLanding("login", qs("invite") ? "Du har blivit inbjuden till en produktion. Logga in för att öppna den." : "");
+    const hp = new URLSearchParams(location.hash.replace(/^#/, ""));
+    const expired = /otp_expired|invalid/i.test(hp.get("error_code") || "") || /expired/i.test(hp.get("error_description") || "");
+    showLanding("login", expired
+      ? "Länken i mejlet har gått ut. Skriv din mejladress nedan så får du en ny – inbjudan följer med automatiskt."
+      : qs("invite") ? "Du har blivit inbjuden till en produktion. Logga in för att öppna den." : "");
+    if (expired) history.replaceState(null, "", location.pathname + location.search);
     return;
   }
   const md = cloud.user.user_metadata || {};
@@ -3436,6 +3454,7 @@ async function openInvite() {
   const mgr = isManager();
   document.getElementById("inv-title").textContent = mgr ? "Bjud in · medlemmar" : "Medlemmar";
   document.getElementById("inv-foot-mgr").style.display = mgr ? "" : "none";
+  document.getElementById("inv-email-box").style.display = mgr ? "" : "none";
   document.getElementById("inv-overlay").classList.add("open");
   document.getElementById("inv-sub").textContent = cloud.project.name;
   await renderInvite();
@@ -3487,12 +3506,30 @@ async function renderInvite(newLink) {
   el.innerHTML = h;
 }
 function inviteUrl(token) { return location.origin + location.pathname + "?invite=" + token; }
-async function createInvite(r) {
+async function newInviteToken(r) {
   const token = Array.from(crypto.getRandomValues(new Uint8Array(18))).map(b => b.toString(16).padStart(2, "0")).join("");
   const expires = new Date(Date.now() + 14 * 86400000).toISOString();
   const { error } = await sb.from("invites").insert({ token, project_id: cloud.project.id, role: r, created_by: cloud.user.id, expires_at: expires });
-  if (error) { toast("Kunde inte skapa länk: " + error.message); return; }
-  await renderInvite(inviteUrl(token));
+  if (error) { toast("Kunde inte skapa inbjudan: " + error.message); return null; }
+  return token;
+}
+async function createInvite(r) {
+  const token = await newInviteToken(r);
+  if (token) await renderInvite(inviteUrl(token));
+}
+// Inbjudan via mejl: Supabase skickar en inloggningslänk (via Resend) som leder rakt in i produktionen
+async function sendInviteEmail() {
+  const el = document.getElementById("inv-email");
+  const email = (el.value || "").trim().toLowerCase();
+  const r = document.getElementById("inv-email-role").value;
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) { toast("Skriv en giltig mejladress"); el.focus(); return; }
+  const token = await newInviteToken(r);
+  if (!token) return;
+  const { error } = await sb.auth.signInWithOtp({ email, options: { emailRedirectTo: inviteUrl(token), shouldCreateUser: true } });
+  if (error) { toast("Kunde inte skicka: " + error.message); return; }
+  el.value = "";
+  toast(`Inbjudan skickad till ${email}`);
+  renderInvite();
 }
 async function revokeInvite(token) {
   await sb.from("invites").delete().eq("token", token);
@@ -3542,10 +3579,19 @@ async function openAccounts() {
     return `<div class="proj-row" style="flex-direction:column;align-items:stretch">
       <div style="display:flex;align-items:center;gap:6px">${avatarHtml(p)}<b>${esc(p.username || p.id.slice(0, 8))}</b>
         ${me ? `<span class="muted">(du)</span>` : ""}${sup ? `<span class="role-pill admin" title="Ser alla produktioner och hanterar konton">Admin</span>` : ""}
+        <div class="spacer" style="flex:1"></div>
+        ${me || sup ? "" : `<button class="icon del" title="Ta bort användaren helt" onclick="deleteUser('${p.id}','${esc(p.username || "")}')">Ta bort användare</button>`}
 </div>
       ${rows}
     </div>`;
   }).join("") || `<div class="cm-empty">Inga konton.</div>`;
+}
+async function deleteUser(uid, name) {
+  if (!confirm(`Ta bort kontot "${name}" helt?\n\nPersonen försvinner ur alla produktioner och måste bjudas in på nytt för att komma tillbaka. Kommentarer personen skrivit finns kvar.`)) return;
+  const { error } = await sb.rpc("delete_user", { p_uid: uid });
+  if (error) { toast("Kunde inte ta bort: " + error.message); return; }
+  toast("Kontot borttaget");
+  openAccounts();
 }
 async function setMemberRoleFor(pid, uid, r) {
   const { error } = await sb.from("members").update({ role: r }).eq("project_id", pid).eq("user_id", uid);
