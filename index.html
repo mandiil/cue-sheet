@@ -643,7 +643,7 @@ const SUPA = {
     <div id="tl-spacer"></div>
     <canvas id="tl-canvas"></canvas>
   </div>
-  <div id="tl-status" class="col-hint">Importera en AAF (Importera EDL/XML/AAF…) så byggs tidslinjen av musikspåren. Klicka i tidslinjen för att flytta spelhuvudet · klicka på ett klipp för att hitta dess cue-rad · shift+scroll för att panorera.</div>
+  <div id="tl-status" class="col-hint">Importera en AAF (Importera EDL/XML/AAF…) så byggs tidslinjen av musikspåren. Klicka i tidslinjen för att flytta spelhuvudet · dubbelklicka på ett klipp för att hoppa till dess cue-rad · shift+scroll för att panorera.</div>
 </div>
 
 <div class="panel" id="arch-panel">
@@ -3427,7 +3427,7 @@ const tl = { reader: null, clips: [], pxs: 20, pos: 0, playing: false, ctx: null
              t0: 0, pos0: 0, gen: 0, hover: -1, sel: -1, raf: 0, timer: 0, sig: null };
 function tlB64(u8) { let s = ""; for (let i = 0; i < u8.length; i += 8192) s += String.fromCharCode.apply(null, u8.subarray(i, i + 8192)); return btoa(s); }
 function tlU8(b64) { if (!b64) return null; const s = atob(b64), u = new Uint8Array(s.length); for (let i = 0; i < s.length; i++) u[i] = s.charCodeAt(i); return u; }
-function tlStatus(msg) { document.getElementById("tl-status").textContent = msg || "Klicka i tidslinjen för att flytta spelhuvudet · klicka på ett klipp för att hitta dess cue-rad · shift+scroll panorerar, Cmd/Ctrl+scroll zoomar · mellanslag = spela/paus."; }
+function tlStatus(msg) { document.getElementById("tl-status").textContent = msg || "Klicka i tidslinjen för att flytta spelhuvudet · dubbelklicka på ett klipp för att hoppa till dess cue-rad · shift+scroll panorerar, Cmd/Ctrl+scroll zoomar · mellanslag = spela/paus."; }
 function tlSig() { const t = state.timeline; return t ? t.seq + "|" + t.file + "|" + t.clips.length : ""; }
 function tlOpen() { return document.getElementById("tl-panel").classList.contains("open"); }
 function tlDur() { const t = state.timeline; if (!t || !t.clips.length) return 60; return Math.max(...t.clips.map(c => c.outF)) / t.fps + 5; }
@@ -3702,8 +3702,11 @@ async function tlLoadChunk(c, a, b, cs, gen) {
     const { sec, i } = tlClipAt(ev);
     tl.sel = i;
     tlSeek(sec);
-    if (i >= 0) tlFlashCue(tl.clips[i]);
     sc.focus({ preventScroll: true });
+  });
+  cv.addEventListener("dblclick", ev => {
+    const { i } = tlClipAt(ev);
+    if (i >= 0) tlFlashCue(tl.clips[i]);
   });
   document.addEventListener("keydown", ev => {
     if (ev.code !== "Space" || !tlOpen()) return;
