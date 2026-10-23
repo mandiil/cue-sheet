@@ -3588,6 +3588,7 @@ async function openAccounts() {
 }
 async function deleteUser(uid, name) {
   if (!confirm(`Ta bort kontot "${name}" helt?\n\nPersonen försvinner ur alla produktioner och måste bjudas in på nytt för att komma tillbaka. Kommentarer personen skrivit finns kvar.`)) return;
+  try { await sb.storage.from("avatars").remove([`${uid}/avatar.jpg`]); } catch (e) {} // profilbild (Storage-API, ej SQL)
   const { error } = await sb.rpc("delete_user", { p_uid: uid });
   if (error) { toast("Kunde inte ta bort: " + error.message); return; }
   toast("Kontot borttaget");
