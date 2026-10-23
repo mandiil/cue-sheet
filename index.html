@@ -121,6 +121,8 @@ const SUPA = {
   .missing-mark { color: #d9534f; cursor: pointer; margin-left: 4px; font-size: 13px; }
   #tl-panel { display: none; }
   #tl-panel.open { display: block; }
+  @keyframes tl-glow { 0%, 100% { box-shadow: 0 0 0 0 rgba(212,168,67,0); } 50% { box-shadow: 0 0 0 6px rgba(212,168,67,.55); } }
+  #tl-open-btn.pulse { background: var(--accent); color: #14161a; font-weight: 700; animation: tl-glow 1s ease-in-out infinite; }
   #tl-panel.open.pinned { position: sticky; top: 6px; z-index: 40; box-shadow: 0 10px 30px rgba(0,0,0,.45); }
   #tl-scroll { position: relative; overflow-x: auto; overflow-y: hidden; background: #0f1114; border: 1px solid var(--border); border-radius: 6px; outline: none; }
   #tl-scroll:focus { border-color: var(--accent); }
@@ -690,12 +692,12 @@ const SUPA = {
     <label style="margin:0">Tidslinje</label>
     <span id="tl-info" class="col-hint" style="margin:0"></span>
     <span style="flex:1"></span>
-    <button id="tl-play" class="primary" onclick="tlToggle()" title="Mellanslag">▶ Spela</button>
+    <button id="tl-play" class="primary" onclick="tlToggle()" onmouseenter="tlNeedAudio()" onmouseleave="tlNeedAudio(false)" title="Mellanslag">▶ Spela</button>
     <span id="tl-time" style="font-family:'SF Mono',Menlo,monospace;min-width:96px;text-align:center">--:--:--:--</span>
     <button onclick="tlZoom(1.6)">Zooma in +</button>
     <button onclick="tlZoom(1/1.6)">Zooma ut −</button>
     <button onclick="tlZoomAll()">Allt</button>
-    <button id="tl-audd" class="admin-only" onclick="tlAudd()" title="Skickar 12 s av det markerade klippet till AudD (nätet) och visar artist/titel med Spotify-länk">Identifiera (AudD)</button>
+    <button id="tl-audd" class="admin-only" onclick="tlAudd()" onmouseenter="tlNeedAudio()" onmouseleave="tlNeedAudio(false)" title="Skickar 12 s av det markerade klippet till AudD (nätet) och visar artist/titel med Spotify-länk">Identifiera (AudD)</button>
     <label style="display:flex;align-items:center;gap:5px;font-size:12px;color:var(--muted);cursor:pointer" title="Tidslinjen ligger kvar högst upp medan listan scrollar, och listan scrollar själv till cuen du pekar på"><input type="checkbox" id="tl-pin" onchange="tlPin(this.checked)"> Fäst &amp; följ i listan</label>
     <button id="tl-open-btn" onclick="document.getElementById('tl-aaf-in').click()" title="Ljudet ligger i AAF-filen och sparas inte i projektet – öppna filen igen för att lyssna">Öppna AAF för ljud…</button>
     <input type="file" id="tl-aaf-in" accept=".aaf" style="display:none" onchange="tlOpenFile(event)">
@@ -3326,7 +3328,7 @@ function auddUse() { if (auddCur && auddCur.onUse) auddCur.onUse(auddCur.hit); c
 async function tlAudd() {
   if (tl.sel < 0) { toast("Klicka på ett klipp i tidslinjen först"); return; }
   const c = tl.clips[tl.sel];
-  if (!tl.reader || !c.chans || !c.chans.length) { toast("Ljudet ligger i AAF-filen – öppna den först (Öppna AAF för ljud…)"); return; }
+  if (!tl.reader || !c.chans || !c.chans.length) { tlNeedAudio(true, true); toast("Ljudet ligger i AAF-filen – klicka den lysande knappen Öppna AAF för ljud…"); return; }
   const ch = c.chans[0], total = Math.floor((c.outF - c.inF) / state.timeline.fps * ch.sr), n = Math.min(12 * ch.sr, total);
   const from = total > n ? Math.floor((total - n) * 0.35) : 0;
   const btn = document.getElementById("tl-audd"); btn.disabled = true; tlStatus("Frågar AudD…");
@@ -3945,6 +3947,7 @@ function tlInfo() {
   if (!t || !t.clips.length) { el.textContent = "Ingen tidslinje ännu."; }
   else el.textContent = `${t.file} · ${t.clips.length} klipp · ${tlLanes()} spår · ${tl.reader ? "ljud laddat" : "inget ljud laddat (öppna AAF-filen för att lyssna)"}`;
   document.getElementById("tl-open-btn").style.display = tl.reader ? "none" : "";
+  if (tl.reader) document.getElementById("tl-open-btn").classList.remove("pulse");
   tlStatus(t && t.clips.length ? "" : "Importera en AAF (Importera EDL/XML/AAF…) så byggs tidslinjen av musikspåren.");
 }
 // synka runtime-klippen från projektet (utan ljud) när projektet byts/laddas
@@ -4121,6 +4124,18 @@ function tlHoverCue(ci) {
     if (r.top < ph + 8 || r.bottom > window.innerHeight - 8) window.scrollBy({ top: r.top - ph - 60, behavior: "smooth" });
   }
 }
+// Knappar som kräver inläst ljud: när ljudet inte är laddat lyser "Öppna AAF för ljud…" upp (och scrollas fram) vid hover/klick
+let tlGlowTimer = 0;
+function tlNeedAudio(on = true, hold = false) {
+  const b = document.getElementById("tl-open-btn");
+  clearTimeout(tlGlowTimer);
+  if (!on) { tlGlowTimer = setTimeout(() => b.classList.remove("pulse"), hold ? 4000 : 300); return; }
+  if (tl.reader || !tl.clips.length) return;
+  b.classList.add("pulse");
+  const r = b.getBoundingClientRect();
+  if (r.top < 0 || r.bottom > window.innerHeight) b.scrollIntoView({ behavior: "smooth", block: "center" });
+  if (hold) tlGlowTimer = setTimeout(() => b.classList.remove("pulse"), 4000);
+}
 function tlRestorePin() {
   let pin = false; try { pin = !!localStorage.getItem("tl-pin"); } catch (e) {}
   document.getElementById("tl-pin").checked = pin; tlPin(pin);
@@ -4146,7 +4161,7 @@ function tlSeek(sec) {
 function tlToggle() { tl.playing ? tlStop() : tlPlay(); }
 async function tlPlay() {
   if (!tl.clips.length) { toast("Ingen tidslinje – importera en AAF först"); return; }
-  if (!tl.reader) { toast("Ljudet ligger i AAF-filen – klicka Öppna AAF för ljud… för att lyssna"); return; }
+  if (!tl.reader) { tlNeedAudio(true, true); toast("Ljudet ligger i AAF-filen – klicka den lysande knappen Öppna AAF för ljud…"); return; }
   if (!tl.ctx) {
     tl.ctx = new (window.AudioContext || window.webkitAudioContext)();
     tl.gain = tl.ctx.createGain(); tl.gain.gain.value = 0.9; tl.gain.connect(tl.ctx.destination);
