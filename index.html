@@ -126,6 +126,8 @@ const SUPA = {
   #tl-spacer { height: 1px; }
   #tl-canvas { position: sticky; left: 0; display: block; cursor: crosshair; }
   tr.tl-flash td { background: rgba(212, 168, 67, 0.28) !important; transition: background 0.3s; }
+  tr.tl-hover td { background: rgba(212, 168, 67, 0.14) !important; }
+  tr.tl-hover td.col-no input { background: var(--accent); color: #14161a; }
   #hist-panel { display: none; }
   #hist-panel.open { display: block !important; }
   #arch-panel { display: none; }
@@ -1125,7 +1127,7 @@ function render() {
         const nSub = cue.sub ? cue.sub.length : 0;
         const arrow = nSub ? `<button class="sub-toggle ${subOpenId === cue.id ? "open" : ""}" title="${nSub} fil${nSub > 1 ? "er" : ""} till ligger ovanpå – visa/dölj" onclick="toggleSub(${i})">${subOpenId === cue.id ? "▾" : "▸"}</button>` : `<span class="sub-toggle-gap"></span>`;
         const drag = isAdmin() ? ` draggable="true" ondragstart="cueDragStart(event,${i})" ondragend="cueDragEnd(event)" title="Dra numret till en annan cue för att slå ihop dem"` : "";
-        cells += `<td class="col-no${tc}">${arrow}<input ${d}${drag} value="${esc(v)}" oninput="updF(${i},'${col.id}',this.value)">${miss}</td>`;
+        cells += `<td class="col-no${tc}">${arrow}<input ${d}${drag} value="${esc(v)}" oninput="updF(${i},'${col.id}',this.value)" onchange="noChanged(${i},this)">${miss}</td>`;
       } else if (col.type === "short") {
         const rr = isVerRef(col.id) ? `;refreshVerCells(${i})` : "";
         // fältet växer med innehållet (size = antal tecken) så t.ex. "2.4.1" alltid syns helt
@@ -1300,6 +1302,27 @@ function promoteSub(i, k) {
   if (state.columns.some(c => c.id === "filmcut")) f.filmcut = state.meta.cut || "";
   state.cues.splice(i + 1, 0, { f });
   render(); toast("Egen cue skapad – ge den ett nummer");
+}
+
+// När ett löpnummer ändras för hand (t.ex. dubbel 9:a → 10) erbjuds omnumrering av alla efterföljande cuer
+function noChanged(i, el) {
+  const nv = (el.value || "").trim(), ov = (el.defaultValue || "").trim();
+  if (!isAdmin() || nv === ov || !/^\d+$/.test(nv)) return;
+  const n = parseInt(nv, 10);
+  const plan = []; let cur = n, lastBase = null;
+  state.cues.forEach((c, k) => {
+    if (k <= i) return;
+    const m = ((c.f && c.f.no) || "").match(/^(\d+)([a-z]*)$/i); if (!m) return;
+    if (m[1] !== lastBase) { lastBase = m[1]; cur++; }
+    const to = cur + m[2];
+    if (to !== c.f.no) plan.push({ c, from: c.f.no, to });
+  });
+  if (!plan.length) return;
+  const ex = plan.slice(0, 6).map(p => `${p.from}→${p.to}`).join(", ") + (plan.length > 6 ? " …" : "");
+  if (!confirm(`Döp om de ${plan.length} efterföljande cuerna också?\n${ex}`)) return;
+  snapshot("före omnumrering", true);
+  plan.forEach(p => { p.c.f.no = p.to; });
+  render(); toast(`${plan.length} cuer omnumrerade`);
 }
 
 // ---------- Slå ihop två cuer: dra No. på en rad och släpp på en annan ----------
@@ -3972,7 +3995,8 @@ function tlClipAt(ev) {
   const i = tl.clips.findIndex(c => c.lane === lane && f >= c.inF && f <= c.outF);
   return { sec, i };
 }
-function tlFlashCue(c) {
+// vilken cue-rad hör ett tidslinjeklipp till? (samma namn som Temp/File Name/extra fil, närmast föregående TC)
+function tlCueFor(c) {
   const t = state.timeline;
   let best = -1, bestTc = -1;
   state.cues.forEach((q, i) => {
@@ -3981,8 +4005,17 @@ function tlFlashCue(c) {
     if (f == null || f > t.start + c.inF + 2) return;
     if (f > bestTc) { bestTc = f; best = i; }
   });
+  return best;
+}
+function tlCueRow(i) { return i < 0 ? null : [...document.querySelectorAll("#cue-body tr:not(.sub-row)")][i] || null; }
+function tlHoverCue(ci) {
+  document.querySelectorAll("#cue-body tr.tl-hover").forEach(tr => tr.classList.remove("tl-hover"));
+  const tr = tlCueRow(ci); if (tr) tr.classList.add("tl-hover");
+}
+function tlFlashCue(c) {
+  const best = tlCueFor(c);
   if (best < 0) { toast("Ingen cue-rad hittad för " + c.name); return; }
-  const tr = document.querySelectorAll("#cue-body tr")[best];
+  const tr = tlCueRow(best);
   if (!tr) return;
   tr.scrollIntoView({ behavior: "smooth", block: "center" });
   tr.classList.add("tl-flash"); setTimeout(() => tr.classList.remove("tl-flash"), 1800);
@@ -4063,11 +4096,17 @@ async function tlLoadChunk(c, a, b, cs, gen) {
   }, { passive: false });
   cv.addEventListener("mousemove", ev => {
     const { sec, i } = tlClipAt(ev);
-    if (i !== tl.hover) { tl.hover = i; tlDraw(); }
+    if (i === tl.hover) return;
+    tl.hover = i; tlDraw();
     const t = state.timeline;
-    cv.title = i >= 0 ? `${tl.clips[i].name}\n${fmtTC(t.start + tl.clips[i].inF, t.fps)} – ${fmtTC(t.start + tl.clips[i].outF, t.fps)}` : "";
+    if (i < 0) { cv.title = ""; tlHoverCue(-1); tlStatus(""); return; }
+    const c = tl.clips[i], ci = tlCueFor(c), q = ci >= 0 ? state.cues[ci] : null;
+    const cueTxt = q ? `Cue ${(q.f && q.f.no) || "–"}` : "ingen cue-rad";
+    cv.title = `${cueTxt} · ${c.name}\n${fmtTC(t.start + c.inF, t.fps)} – ${fmtTC(t.start + c.outF, t.fps)}`;
+    tlHoverCue(ci);
+    document.getElementById("tl-status").textContent = `${cueTxt}: ${c.name} · ${fmtTC(t.start + c.inF, t.fps)} – ${fmtTC(t.start + c.outF, t.fps)}` + (q && q.f && q.f.titel ? ` · ${q.f.titel}` : "");
   });
-  cv.addEventListener("mouseleave", () => { if (tl.hover !== -1) { tl.hover = -1; tlDraw(); } });
+  cv.addEventListener("mouseleave", () => { if (tl.hover !== -1) { tl.hover = -1; tlDraw(); } tlHoverCue(-1); tlStatus(""); });
   cv.addEventListener("mousedown", ev => {
     if (ev.button !== 0) return;
     const { sec, i } = tlClipAt(ev);
