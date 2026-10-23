@@ -65,6 +65,8 @@ const SUPA = {
   }
   .meta-grid > div { display: flex; flex-direction: column; justify-content: flex-end; }
   label { display: block; font-size: 11px; text-transform: uppercase; letter-spacing: .8px; color: var(--muted); margin-bottom: 4px; }
+  label input[type="checkbox"], label input[type="radio"] { width: auto; margin: 0 4px 0 0; flex: none; } /* Safari: annars tar kryssrutan 100 % bredd och texten försvinner */
+  .inline-check { display: inline-flex !important; align-items: center; gap: 5px; white-space: nowrap; text-transform: none; letter-spacing: 0; margin: 0; cursor: pointer; }
   input, select {
     width: 100%; background: var(--panel2); border: 1px solid var(--border);
     color: var(--text); border-radius: 6px; padding: 7px 9px; font-size: 14px;
@@ -698,7 +700,7 @@ const SUPA = {
     <button onclick="tlZoom(1/1.6)">Zooma ut −</button>
     <button onclick="tlZoomAll()">Allt</button>
     <button id="tl-audd" class="admin-only" onclick="tlAudd()" onmouseenter="tlNeedAudio()" onmouseleave="tlNeedAudio(false)" title="Skickar 12 s av det markerade klippet till AudD (nätet) och visar artist/titel med Spotify-länk">Identifiera (AudD)</button>
-    <label style="display:flex;align-items:center;gap:5px;font-size:12px;color:var(--muted);cursor:pointer" title="Tidslinjen ligger kvar högst upp medan listan scrollar, och listan scrollar själv till cuen du pekar på"><input type="checkbox" id="tl-pin" onchange="tlPin(this.checked)"> Fäst &amp; följ i listan</label>
+    <label class="inline-check" style="font-size:12px;color:var(--muted)" title="Tidslinjen ligger kvar högst upp medan listan scrollar, och listan scrollar själv till cuen du pekar på"><input type="checkbox" id="tl-pin" onchange="tlPin(this.checked)"><span>Fäst &amp; följ i listan</span></label>
     <button id="tl-open-btn" onclick="document.getElementById('tl-aaf-in').click()" title="Ljudet ligger i AAF-filen och sparas inte i projektet – öppna filen igen för att lyssna">Öppna AAF för ljud…</button>
     <input type="file" id="tl-aaf-in" accept=".aaf" style="display:none" onchange="tlOpenFile(event)">
     <button onclick="toggleTimeline()">Stäng</button>
