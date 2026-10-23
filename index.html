@@ -720,8 +720,12 @@ const SUPA = {
     <div><label>Min längd (s)</label><input id="arch-min" type="number" value="3" min="0" step="1"></div>
     <div><label>Max längd (min)</label><input id="arch-max" type="number" value="20" min="1" step="1"></div>
     <div><label>Identifiera okänd fil (även kort utklipp)</label><input type="file" id="arch-id-in" accept="audio/*,.wav,.aif,.aiff,.mp3,.flac,.m4a"></div>
-    <div style="display:flex;align-items:flex-end"><button class="primary" style="width:100%" onclick="archiveIdentify()">Identifiera</button></div>
+    <div style="display:flex;align-items:flex-end;gap:6px">
+      <button class="primary" style="flex:1" onclick="archiveIdentify()" title="Söker i ditt eget SongSpot-arkiv (lokalt i webbläsaren, kostar inget)">Sök i arkivet</button>
+      <button style="flex:1" onclick="archiveAudd()" title="Extern sökning på nätet via AudD – hittar utgiven musik (Spotify/Apple). Räknas mot potten.">Sök externt (AudD)</button>
+    </div>
   </div>
+  <div class="col-hint" style="margin-top:4px"><b>Sök i arkivet</b> = ditt eget fingerprint-arkiv här i webbläsaren (skisser, omdöpta filer). <b>Sök externt (AudD)</b> = tjänst på nätet som känner igen utgiven musik, t.ex. tempmusik från film och skivor – kräver inloggning, 12 s av filen skickas, och varje sökning räknas mot potten (se Konton).</div>
   <div id="arch-status" class="col-hint"></div>
   <div id="arch-results"></div>
   <div style="display:flex;gap:8px;margin-top:10px;align-items:center">
@@ -3340,6 +3344,20 @@ async function tlAudd() {
              `${c.name}` + (q ? ` → cue ${(q.f && q.f.no) || ""}` : ""));
   } catch (e) { toast(String(e.message || e)); }
   btn.disabled = false; tlStatus("");
+}
+// SongSpot: extern sökning på vald fil (12 s en bit in i filen)
+async function archiveAudd() {
+  const file = document.getElementById("arch-id-in").files[0];
+  if (!file) { toast("Välj en fil att identifiera först"); return; }
+  if (!sb || !cloud.user) { toast("Logga in för att söka externt (AudD)"); return; }
+  archStatus(`Läser ${file.name} och frågar AudD…`);
+  try {
+    const { samples, sr } = await fpGetMono(file, file.name);
+    const n = Math.min(12 * sr, samples.length), from = samples.length > n ? Math.floor((samples.length - n) * 0.35) : 0;
+    const res = await auddLookup(samples.subarray(from, from + n), sr), hit = auddPick(res);
+    showAudd(res, hit, null, file.name);
+    archStatus(hit ? `AudD: ${hit.artist} – ${hit.title}${hit.album ? " (" + hit.album + ")" : ""}` : "AudD: ingen träff");
+  } catch (e) { archStatus("AudD: " + (e.message || e)); toast(String(e.message || e)); }
 }
 // Auto-detektering: 12 s ur region i
 let detMonoCache = null;
