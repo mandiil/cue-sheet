@@ -149,6 +149,7 @@ const SUPA = {
   .det-grid > div { position: relative; }
   #det-offset-hint { position: absolute; left: 0; right: 0; top: 100%; font-size: 11px; color: var(--muted); margin-top: 3px; line-height: 1.25; }
   #det-offset.needs-input { background: #1f2a3d; border-color: #3b5a8c; }
+  #det-analyze.dirty { background: #f0c75e; color: #14161a; box-shadow: 0 0 0 3px rgba(240,199,94,.35); }
   #det-offset.from-file { border-color: #3f8a5a; }
   @media (max-width: 1000px) { .det-grid { grid-template-columns: 1fr 1fr 1fr; } }
   #det-wave { width: 100%; height: 110px; margin-top: 14px; background: var(--panel2); border: 1px solid var(--border); border-radius: 6px; }
@@ -745,12 +746,12 @@ const SUPA = {
   <div id="det-top">
   <label style="margin-bottom:10px">Auto-detektera cuer i ljudfil</label>
   <div class="det-grid">
-    <div><label>Ljudfil (WAV säkrast) – eller dra hit</label><input type="file" id="audio-in" accept="audio/*,.wav,.aif,.aiff,.mp3,.flac" onchange="bwfPrefill(this.files[0])"></div>
-    <div><label>Filens start-TC</label><input id="det-offset" class="tc" value="01:00:00:00" oninput="this.classList.remove('needs-input')" title="SMPTE-positionen där bouncen börjar i Logic/Pro Tools (t.ex. 00:59:32:00). Läses automatiskt ur WAV-filen om den har en BWF-tidsstämpel."><div id="det-offset-hint"></div></div>
-    <div><label>Tröskel (dBFS)</label><input id="det-thresh" type="number" value="-70" step="1"></div>
-    <div><label>Min tystnad mellan cuer (s)</label><input id="det-gap" type="number" value="2" step="0.5" min="0.5"></div>
-    <div><label>Min cue-längd (s)</label><input id="det-minlen" type="number" value="4" step="1" min="1"></div>
-    <div><label>&nbsp;</label><button class="primary" style="width:100%" onclick="analyzeAudio()">Analysera</button></div>
+    <div><label>Ljudfil (WAV säkrast) – eller dra hit</label><input type="file" id="audio-in" accept="audio/*,.wav,.aif,.aiff,.mp3,.flac" onchange="bwfPrefill(this.files[0]);detDirty()"></div>
+    <div><label>Filens start-TC</label><input id="det-offset" class="tc" value="01:00:00:00" oninput="this.classList.remove('needs-input');detDirty()" title="SMPTE-positionen där bouncen börjar i Logic/Pro Tools (t.ex. 00:59:32:00). Läses automatiskt ur WAV-filen om den har en BWF-tidsstämpel."><div id="det-offset-hint"></div></div>
+    <div><label>Tröskel (dBFS)</label><input id="det-thresh" type="number" value="-70" step="1" oninput="detDirty()"></div>
+    <div><label>Min tystnad mellan cuer (s)</label><input id="det-gap" type="number" value="2" step="0.5" min="0.5" oninput="detDirty()"></div>
+    <div><label>Min cue-längd (s)</label><input id="det-minlen" type="number" value="4" step="1" min="1" oninput="detDirty()"></div>
+    <div><label>&nbsp;</label><button id="det-analyze" class="primary" style="width:100%" onclick="detAnalyzeClick()">Analysera</button></div>
   </div>
   <div id="det-status" class="col-hint"></div>
   <canvas id="det-wave" style="display:none"></canvas>
@@ -2274,6 +2275,14 @@ async function bwfPrefill(file) {
   } catch (e) { hint.textContent = ""; }
 }
 
+// "Analysera" läser filen; efter första analysen heter knappen "Analysera om" och lyser upp när någon inställning ändrats
+function detDirty() { const b = document.getElementById("det-analyze"); if (audioEnv) { b.classList.add("dirty"); b.textContent = "Analysera om"; } }
+function detClean() { const b = document.getElementById("det-analyze"); b.classList.remove("dirty"); b.textContent = audioEnv ? "Analysera om" : "Analysera"; }
+function detAnalyzeClick() {
+  const file = document.getElementById("audio-in").files[0];
+  if (audioEnv && detFile && file === detFile) { detectRegions(); detClean(); return; } // samma fil: räkna bara om regionerna
+  analyzeAudio();
+}
 let detFile = null;
 async function analyzeAudio() {
   const file = document.getElementById("audio-in").files[0];
@@ -2289,7 +2298,7 @@ async function analyzeAudio() {
     audioEnv.name = file.name;
     detected = []; detUndo = []; updateUndoBtn(); // ny fil = ny historik
     setupPlayback(file);
-    detectRegions();
+    detectRegions(); detClean();
   } catch (e) {
     detStatus("Kunde inte läsa filen — WAV fungerar säkrast i webbläsaren. (" + (e.message || e) + ")");
   }
@@ -2645,8 +2654,8 @@ function renderDetected() {
     </tr>`).join("") +
     `</tbody></table>
     <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap">
-      <button class="primary" onclick="addDetected()">Lägg till valda som cuer</button>
-      <button onclick="detectRegions()">Detektera om med nya inställningar</button>
+      <button class="primary" onclick="addDetected('add')" title="Lägger till de valda som nya cuer, utan att jämföra med befintliga">Lägg till valda som cuer</button>
+      <button class="primary" onclick="addDetected('merge')" title="Stämmer av de valda mot befintliga cuer (ljudinnehåll/TC) – uppdaterar matchade, lägger till nya, markerar saknade">Merge med befintlig lista</button>
     </div>`;
 }
 
@@ -2729,7 +2738,7 @@ async function detIdentify(auto) {
   finally { detIdentifying = false; fpStatusSink = null; }
 }
 
-async function addDetected() {
+async function addDetected(mode) {
   const sel = detected.filter(r => r.sel);
   if (!sel.length) { toast("Inga cuer valda"); return; }
   // ljudfingerprint per region (första 20 s) för innehållsbaserad avstämning
@@ -2746,7 +2755,7 @@ async function addDetected() {
     if (mono) { try { const a = Math.floor(r.start * mono.sr), b = Math.min(mono.samples.length, Math.floor(r.end * mono.sr)); const fp = await cueFpFromSamples(mono.samples.subarray(a, b), mono.sr); clip.fp = fp.flat; clip.fpDur = fp.dur; } catch (e) {} }
     clips.push(clip);
   }
-  reconcileImport(clips, "auto-detektering");
+  reconcileImport(clips, "auto-detektering", { force: mode === "merge" ? "" : "add" });
   // fäll ihop panelen och visa tabellen
   if (detAudio) detAudio.pause();
   document.getElementById("detect-panel").classList.remove("open"); syncPanelBtns();
@@ -3971,14 +3980,15 @@ function recNorm(s) { return (s || "").toLowerCase().replace(/\.(wav|aif|aiff|mp
 function recExisting() {
   return state.cues.map((q, i) => ({ i, q, no: (q.f && q.f.no) || "", name: cueName(q), tc: parseTC((q.f && q.f.tc) || "") }));
 }
-async function reconcileImport(clips, src) {
+async function reconcileImport(clips, src, ro) {
+  ro = ro || {};
   const rows = clips.map(c => ({ name: (c.name || "").trim(), nameSrc: c.nameSrc || "", namePct: c.namePct || 0, tcIn: c.tcIn, tcOut: c.tcOut || "", note: c.note || "", sub: c.sub, fp: c.fp || null, fpDur: c.fpDur || 0,
                                  inF: parseTC(c.tcIn || ""), outF: c.tcOut ? parseTC(c.tcOut) : null, match: -1, skip: false, how: "", cov: 0 }))
                     .filter(r => r.inF != null).sort((a, b) => a.inF - b.inF);
   if (!rows.length) { toast("Inga klipp med giltig TC"); return; }
   const suggested = rows.filter(r => r.name && r.nameSrc === "suggest");
   const opt = { tol: 10, updateTc: true, markMissing: true, numbering: "ab", useNames: suggested.length > 0 && suggested.every(r => r.namePct >= 60) };
-  if (!recExisting().some(e => e.tc != null)) { applyReconcile(rows, src, { ...opt, markMissing: false }); return; }
+  if (ro.force === "add" || !recExisting().some(e => e.tc != null)) { applyReconcile(rows, src, { ...opt, markMissing: false }); return; } // rent tillägg
   ensureCueIds();
   let fpMap = new Map();
   if (rows.some(r => r.fp)) { toast("Jämför ljudinnehåll med befintliga cuer…"); fpMap = await cueFpLoadFor(state.cues, m => toast(m)); }
