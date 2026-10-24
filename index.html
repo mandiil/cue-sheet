@@ -146,6 +146,8 @@ const SUPA = {
   .chat-m a.cue { color: var(--accent); cursor: pointer; font-weight: 600; text-decoration: none; }
   .chat-m a.cue:hover { text-decoration: underline; }
   .chat-m button.icon { opacity: 0; padding: 0 6px; }
+  button.icon.chat-ref { color: var(--accent); border-color: transparent; white-space: nowrap; }
+  button.icon.chat-ref:hover { border-color: var(--accent); }
   .chat-m:hover button.icon { opacity: 1; }
   .chat-input { display: flex; gap: 8px; margin-top: 6px; align-items: flex-end; }
   .chat-input textarea { flex: 1; width: auto; resize: none; min-height: 36px; max-height: 96px; font-family: inherit; line-height: 1.35; }
@@ -490,6 +492,7 @@ const SUPA = {
         <div class="spacer"></div>
         <label title="Pling när ett meddelande kommer in"><input type="checkbox" id="chat-sound" checked onchange="chatSetSound(this.checked)">ljud</label>
         <label title="Visa en toast när ett meddelande kommer in i gruppchatten (privata pingar alltid)"><input type="checkbox" id="chat-notify-all" checked onchange="chatSetNotifyAll(this.checked)">pinga gruppchatt</label>
+        <button id="chat-clear" title="Ta bort alla inlägg i den här kanalen" onclick="chatClear()">Rensa chatt</button>
         <button onclick="toggleChat(false)">Göm</button>
       </div>
       <div class="chat-msgs" id="chat-msgs"></div>
@@ -1147,7 +1150,10 @@ let state = blankState("film");
 
 // Stabilt id per cue (behövs för kommentarer/teknikerfält i molnet)
 function newId() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 8); }
-function ensureCueIds() { state.cues.forEach(c => { if (!c.id) c.id = newId(); }); }
+function ensureCueIds() {
+  state.cues.forEach(c => { if (!c.id) c.id = newId(); });
+  (state.recordings || []).forEach(r => (r.notes || []).forEach(n => { if (!n.id) n.id = newId(); })); // Rec Notes-rader (chattreferenser)
+}
 
 function renderProjTitle() {
   const el = document.getElementById("proj-title");
@@ -2164,19 +2170,21 @@ function recNotesHtml(rec) {
     <th>Take No.</th><th>Start Bar</th><th>End Bar</th><th>Rec. Layer</th><th>Use Take</th>
     <th>Edit Comments</th><th>Composer Comments</th><th></th></tr></thead><tbody>`;
   rec.notes.forEach((nt, i) => {
+    if (!nt.id) nt.id = newId();
     const acts = `<td class="act">
+      ${cloudActive() ? `<button class="icon chat-ref" title="Peka på den här raden i chatten" onclick="chatRefNote('${nt.id}')">→ chatt</button>` : ""}
       <button class="icon" onclick="moveNote(${i},-1)">↑</button>
       <button class="icon" onclick="moveNote(${i},1)">↓</button>
       <button class="icon del" onclick="delNote(${i})">✕</button></td>`;
     if (nt.kind === "session") {
-      h += `<tr><td colspan="7" class="rec-session"><input value="${esc(nt.text)}"
+      h += `<tr data-nid="${nt.id}"><td colspan="7" class="rec-session"><input value="${esc(nt.text)}"
         placeholder="<<<< SESSION 1 (STRINGS) >>>>" oninput="updNoteText(${i},this.value)"></td>${acts}</tr>`;
     } else if (nt.kind === "cue") {
-      h += `<tr><td colspan="7" class="rec-cuehead"><input value="${esc(nt.text)}"
+      h += `<tr data-nid="${nt.id}"><td colspan="7" class="rec-cuehead"><input value="${esc(nt.text)}"
         placeholder="WAL3m01 Start" oninput="updNoteText(${i},this.value)"></td>${acts}</tr>`;
     } else {
       const f = nt.f || {};
-      h += `<tr>
+      h += `<tr data-nid="${nt.id}">
         <td class="col-no"><input value="${esc(f.takeno)}" oninput="updNote(${i},'takeno',this.value)"></td>
         <td style="min-width:60px"><input value="${esc(f.startbar)}" placeholder="<" oninput="updNote(${i},'startbar',this.value)"></td>
         <td style="min-width:60px"><input value="${esc(f.endbar)}" placeholder=">" oninput="updNote(${i},'endbar',this.value)"></td>
@@ -2200,9 +2208,9 @@ function addNote(kind) {
       const m = ((last.f && last.f.takeno) || "").match(/(\d+)\s*$/);
       if (m) n = parseInt(m[1], 10) + 1;
     }
-    rec.notes.push({ kind: "take", f: { takeno: String(n), startbar: "<", endbar: ">", layer: "", use: "", editc: "", compc: "" } });
+    rec.notes.push({ id: newId(), kind: "take", f: { takeno: String(n), startbar: "<", endbar: ">", layer: "", use: "", editc: "", compc: "" } });
   } else {
-    rec.notes.push({ kind, text: "" });
+    rec.notes.push({ id: newId(), kind, text: "" });
   }
   save(); renderRecording();
 }
@@ -5854,8 +5862,66 @@ function chatFmtDay(iso) {
 // #12, #7a → klickbar länk till cuen i listan; webbadresser blir länkar
 function chatLinkify(text) {
   return esc(text)
+    .replace(/\{\{note:([a-z0-9]+)\|([^}]*)\}\}/g, (m, id, label) => `<a class="cue" title="Gå till raden i Rec Notes" onclick="chatGoNote('${id}')">▸ ${label}</a>`)
     .replace(/(https?:\/\/[^\s<]+)/g, '<a href="$1" target="_blank" rel="noopener" style="color:var(--accent)">$1</a>')
+    .replace(/(^|[^\w&])#t(\d+)\b/gi, (m, pre, no) => `${pre}<a class="cue" title="Gå till take ${no} i Rec Notes" onclick="chatGoTake('${no}')">#t${no}</a>`)
     .replace(/(^|[^\w&])#(\d+[a-z]?)\b/gi, (m, pre, no) => `${pre}<a class="cue" title="Gå till cue ${no}" onclick="chatGoCue('${no}')">#${no}</a>`);
+}
+// Referens till en rad i Rec Notes: {{note:<id>|etikett}} – etiketten = cue-rubrik + take-nummer
+function chatNoteLabel(rec, nt) {
+  const i = rec.notes.indexOf(nt);
+  let cueHead = ""; for (let j = i - 1; j >= 0; j--) { if (rec.notes[j].kind === "cue") { cueHead = rec.notes[j].text || ""; break; } }
+  if (nt.kind === "take") return (cueHead ? cueHead + " · " : "") + "take " + ((nt.f && nt.f.takeno) || "?");
+  return (nt.text || (nt.kind === "session" ? "session" : "cue")) + "";
+}
+function chatRefNote(noteId) {
+  const rec = state.recordings.find(r => (r.notes || []).some(n => n.id === noteId)); if (!rec) return;
+  const nt = rec.notes.find(n => n.id === noteId);
+  const label = chatNoteLabel(rec, nt).replace(/[{}|]/g, "") + " (" + fmtRecDate(rec.date) + ")";
+  if (!chat.open) toggleChat(true);
+  const ta = document.getElementById("chat-text");
+  const tok = `{{note:${noteId}|${label}}} `;
+  const a = ta.selectionStart || ta.value.length, b = ta.selectionEnd || a;
+  ta.value = ta.value.slice(0, a) + tok + ta.value.slice(b);
+  ta.focus(); ta.selectionStart = ta.selectionEnd = a + tok.length;
+  ta.style.height = "auto"; ta.style.height = Math.min(96, ta.scrollHeight) + "px";
+  toast("Referens inlagd i chatten – skriv ditt meddelande och skicka");
+}
+function chatGoNote(noteId) {
+  const rec = state.recordings.find(r => (r.notes || []).some(n => n.id === noteId));
+  if (!rec) { toast("Raden finns inte längre i Rec Notes"); return; }
+  state.recActive = true; state.recSel = { id: rec.id, view: "notes" }; recNewOpen = false; render();
+  const tr = document.querySelector(`#rec-area tr[data-nid="${noteId}"]`); if (!tr) return;
+  tr.scrollIntoView({ behavior: "smooth", block: "center" });
+  tr.classList.add("tl-flash"); setTimeout(() => tr.classList.remove("tl-flash"), 1600);
+}
+// #t3 → take 3 under senaste cue-rubriken i den aktiva (eller senaste) inspelningens Rec Notes
+function chatGoTake(no) {
+  const rec = curRec() || state.recordings.slice().sort((a, b) => (a.date || "").localeCompare(b.date || "")).pop();
+  if (!rec) { toast("Ingen inspelning finns ännu"); return; }
+  const notes = rec.notes || [];
+  let lastCue = -1; notes.forEach((n, i) => { if (n.kind === "cue") lastCue = i; });
+  let nt = notes.slice(lastCue + 1).find(n => n.kind === "take" && String((n.f || {}).takeno).trim() === String(no));
+  if (!nt) nt = notes.slice().reverse().find(n => n.kind === "take" && String((n.f || {}).takeno).trim() === String(no));
+  if (!nt) { toast(`Take ${no} finns inte i Rec Notes ${fmtRecDate(rec.date)}`); return; }
+  chatGoNote(nt.id);
+}
+// Rensa kanalen: gruppchatten (egna inlägg, admin allt) eller hela den privata tråden
+async function chatClear() {
+  if (!cloudActive()) return;
+  const me = chatMe(), chans = chatChannels(), cur = chans.find(c => c.id === chat.chan) || chans[0];
+  const n = chat.msgs.filter(m => chatChanOf(m) === cur.id).length;
+  if (!n) { toast("Kanalen är redan tom"); return; }
+  if (!confirm(cur.id === "all"
+    ? `Rensa gruppchatten? ${n} inlägg tas bort för alla i teamet.${isAdmin() ? "" : " (Du kan bara ta bort dina egna inlägg.)"}`
+    : `Rensa den privata tråden med ${cur.name}? ${n} inlägg tas bort för er båda.`)) return;
+  let q = sb.from("messages").delete().eq("project_id", cloud.project.id);
+  q = cur.id === "all" ? q.is("to_user", null) : q.or(`and(author.eq.${me},to_user.eq.${cur.id}),and(author.eq.${cur.id},to_user.eq.${me})`);
+  const { error } = await q;
+  if (error) { toast("Kunde inte rensa: " + error.message); return; }
+  await reloadChat(); renderChat();
+  const left = chat.msgs.filter(m => chatChanOf(m) === cur.id).length;
+  toast(left ? `Dina inlägg rensade – ${left} från andra kan bara Admin ta bort` : "Chatten rensad");
 }
 function chatGoCue(no) {
   const i = state.cues.findIndex(c => c.f && String(c.f.no).toLowerCase() === String(no).toLowerCase());
