@@ -568,6 +568,28 @@ const SUPA = {
 </div>
 <div id="print-area"></div>
 
+<!-- SongSpot: förklaring innan webbläsarens mapp-dialog -->
+<div id="scan-overlay" class="overlay" onmousedown="scanDown=(event.target===this)" onmouseup="if(scanDown&&event.target===this)closeScanInfo();scanDown=false">
+  <div class="cm-box" role="dialog" aria-modal="true" style="max-width:560px">
+    <div class="cm-head"><b>Skanna en mapp – vad händer?</b></div>
+    <div style="padding:14px 18px;line-height:1.55">
+      <p style="margin:0 0 10px">Webbläsaren kommer nu fråga om <b>mycuelist.com får visa och kopiera filer</b> i mappen du väljer. Det är webbläsarens egen standardtext och låter värre än det är:</p>
+      <ul style="margin:0 0 10px 18px;padding:0">
+        <li><b>Ingenting laddas upp.</b> Ljudfilerna läses bara lokalt, i din egen webbläsare, för att räkna fram ett fingerprint (hash-värden) per fil.</li>
+        <li><b>Inga filer kopieras någonstans.</b> "Kopiera" betyder bara att sidan får läsa innehållet medan den jobbar.</li>
+        <li>Fingerprinten sparas i din webbläsare. Den går inte att göra om till ljud.</li>
+        <li>Vill du dela en mapp med en produktion gör du det själv efteråt, per mapp – då laddas fingerprint + filnamn upp, aldrig ljud eller sökvägar.</li>
+      </ul>
+      <p style="margin:0;color:var(--muted)">Nästa steg: välj mapp och klicka <b>Tillåt</b> i webbläsarens ruta.</p>
+    </div>
+    <div class="cm-foot">
+      <button class="primary" onclick="closeScanInfo();pickArchiveDirNow()">Välj mapp…</button>
+      <div class="spacer"></div>
+      <button onclick="closeScanInfo()">Avbryt</button>
+    </div>
+  </div>
+</div>
+
 <!-- AudD: bekräfta extern sökning -->
 <div id="auddc-overlay" class="overlay" onmousedown="auddcDown=(event.target===this)" onmouseup="if(auddcDown&&event.target===this)auddConfirmAnswer(false);auddcDown=false">
   <div class="cm-box" role="dialog" aria-modal="true" style="max-width:440px">
@@ -3096,7 +3118,7 @@ function fpHashes(peaks) {
 
 // ---------- SongSpot: skanna diskar, identifiera okända klipp ----------
 const ARCH_DB = "cuesheet-fp-archive", ARCH_EXT = /\.(wav|aif|aiff|aifc|mp3|flac|m4a|ogg)$/i;
-const ARCH_PROMPT = "Namn på mappen i arkivet, t.ex. Gengångare/Skisser eller Jobbmapp/Ambienser.\n\nOBS: Skannar du samma mapp igen senare – använd exakt samma namn, annars hamnar filerna som en ny mapp och dubbleras.";
+const ARCH_PROMPT = "Namn på mappen i arkivet, t.ex. Gengångare/Skisser eller Jobbmapp/Ambienser.\n(Webbläsaren lämnar bara ut mappens eget namn, inte hela sökvägen – fyll gärna på med överordnad mapp.)\n\nOBS: Skannar du samma mapp igen senare – använd exakt samma namn, annars hamnar filerna som en ny mapp och dubbleras.";
 
 function archStatus(m) { document.getElementById("arch-status").textContent = m; }
 function toggleArchive() {
@@ -3172,7 +3194,10 @@ async function updateArchCount() {
   }
 }
 
-async function pickArchiveDir() {
+let scanDown = false;
+function closeScanInfo() { document.getElementById("scan-overlay").classList.remove("open"); }
+function pickArchiveDir() { document.getElementById("scan-overlay").classList.add("open"); }
+async function pickArchiveDirNow() {
   if (window.showDirectoryPicker) {
     try {
       const dir = await showDirectoryPicker();
