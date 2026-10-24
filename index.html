@@ -1539,6 +1539,44 @@ async function applyShiftTc() {
   toast(`${n} tidkoder flyttade ${f > 0 ? "framåt" : "bakåt"} ${fmtTC(Math.abs(f))}`);
 }
 
+// ---------- Kopiera/klistra in hel rad: Cmd/Ctrl+C i en cell utan markerad text kopierar raden, Cmd/Ctrl+V klistrar in ----------
+// Allt utom radnumret följer med (titel, status, TC, Temp, extra filer …). Kommentarstråden rörs inte.
+let rowClip = null;
+function rowOfInput(el) {
+  const tb = document.getElementById("cue-body"), tr = el && el.closest ? el.closest("tr") : null;
+  if (!tr || !tb.contains(tr) || tr.classList.contains("sub-row")) return -1;
+  return [...tb.querySelectorAll("tr:not(.sub-row)")].indexOf(tr);
+}
+document.addEventListener("keydown", ev => {
+  if (!(ev.metaKey || ev.ctrlKey) || ev.key.toLowerCase() !== "c" || ev.shiftKey || ev.altKey) return;
+  const el = document.activeElement; if (!el || !/^(INPUT|SELECT)$/.test(el.tagName)) return;
+  if (el.tagName === "INPUT" && el.selectionStart !== el.selectionEnd) return; // markerad text → vanlig kopiering
+  const i = rowOfInput(el); if (i < 0 || !isAdmin()) return;
+  ev.preventDefault();
+  const q = state.cues[i], f = JSON.parse(JSON.stringify(q.f || {}));
+  delete f.no; delete f.missing; delete f.comments; state.columns.filter(c => c.type === "ts").forEach(c => delete f[c.id]);
+  rowClip = { f, sub: q.sub ? JSON.parse(JSON.stringify(q.sub)) : null, token: `⟪My Cue List: cue ${(q.f && q.f.no) || i + 1}⟫`, from: (q.f && q.f.no) || String(i + 1) };
+  try { navigator.clipboard.writeText(rowClip.token); } catch (e) {}
+  const tr = el.closest("tr"); tr.classList.add("tl-flash"); setTimeout(() => tr.classList.remove("tl-flash"), 900);
+  toast(`Rad ${rowClip.from} kopierad – ställ dig i en annan rad och tryck ${ev.metaKey ? "Cmd" : "Ctrl"}+V`);
+});
+document.addEventListener("paste", ev => {
+  if (!rowClip || !isAdmin()) return;
+  const el = document.activeElement; if (!el || !/^(INPUT|SELECT)$/.test(el.tagName)) return;
+  const i = rowOfInput(el); if (i < 0) return;
+  const text = (ev.clipboardData && ev.clipboardData.getData("text")) || "";
+  if (text && text !== rowClip.token) return; // riktig text i urklipp → vanlig inklistring
+  ev.preventDefault();
+  const q = state.cues[i], no = (q.f && q.f.no) || String(i + 1);
+  snapshot(`före inklistring av rad ${rowClip.from} i rad ${no}`, true);
+  if (!q.f) q.f = {};
+  Object.keys(rowClip.f).forEach(k => { q.f[k] = rowClip.f[k]; });
+  if (rowClip.sub) q.sub = JSON.parse(JSON.stringify(rowClip.sub)); else delete q.sub;
+  touchTs(q); render();
+  const tr = document.querySelectorAll("#cue-body tr:not(.sub-row)")[i]; if (tr) { tr.classList.add("tl-flash"); setTimeout(() => tr.classList.remove("tl-flash"), 1200); }
+  toast(`Rad ${rowClip.from} inklistrad i rad ${no} (numret behålls)`);
+});
+
 // ---------- Slå ihop två cuer: dra No. på en rad och släpp på en annan ----------
 let dragCue = -1;
 function cueDragStart(ev, i) {
