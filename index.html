@@ -760,7 +760,7 @@ const SUPA = {
     <div id="tl-spacer"></div>
     <canvas id="tl-canvas"></canvas>
   </div>
-  <div id="tl-status" class="col-hint">Importera en AAF (Importera EDL/XML/AAF…) så byggs tidslinjen av musikspåren. Klicka i tidslinjen för att flytta spelhuvudet · dubbelklicka på ett klipp för att hoppa till dess cue-rad · shift+scroll för att panorera.</div>
+  <div id="tl-status" class="col-hint">Importera en AAF (Importera EDL/XML/AAF…) så byggs tidslinjen av musikspåren. Klicka eller håll nere och dra i tidslinjen för att flytta spelhuvudet (dra = scrubba i ljudet) · dubbelklicka på ett klipp för att hoppa till dess cue-rad · shift+scroll för att panorera.</div>
 </div>
 
 <div class="panel" id="arch-panel">
@@ -4336,7 +4336,7 @@ const tl = { reader: null, clips: [], pxs: 20, pos: 0, playing: false, ctx: null
              t0: 0, pos0: 0, gen: 0, hover: -1, sel: -1, raf: 0, timer: 0, sig: null };
 function tlB64(u8) { let s = ""; for (let i = 0; i < u8.length; i += 8192) s += String.fromCharCode.apply(null, u8.subarray(i, i + 8192)); return btoa(s); }
 function tlU8(b64) { if (!b64) return null; const s = atob(b64), u = new Uint8Array(s.length); for (let i = 0; i < s.length; i++) u[i] = s.charCodeAt(i); return u; }
-function tlStatus(msg) { document.getElementById("tl-status").textContent = msg || "Klicka i tidslinjen för att flytta spelhuvudet · dubbelklicka på ett klipp för att hoppa till dess cue-rad · shift+scroll panorerar, Cmd/Ctrl+scroll zoomar · mellanslag = spela/paus."; }
+function tlStatus(msg) { document.getElementById("tl-status").textContent = msg || "Klicka eller håll nere och dra i tidslinjen för att flytta spelhuvudet (dra = scrubba i ljudet) · dubbelklicka på ett klipp för att hoppa till dess cue-rad · shift+scroll panorerar, Cmd/Ctrl+scroll zoomar · mellanslag = spela/paus."; }
 function tlSig() { const t = state.timeline; return t ? t.seq + "|" + t.file + "|" + t.clips.length : ""; }
 function tlOpen() { return document.getElementById("tl-panel").classList.contains("open"); }
 function tlBtn() {
@@ -4572,6 +4572,39 @@ function tlFlashCue(c) {
   tr.scrollIntoView({ behavior: "smooth", block: "center" });
   tr.classList.add("tl-flash"); setTimeout(() => tr.classList.remove("tl-flash"), 1800);
 }
+// Scrubbning: spela en kort bit (ca 120 ms) av klippen under spelhuvudet medan man drar
+function tlEnsureCtx() {
+  if (!tl.ctx) {
+    tl.ctx = new (window.AudioContext || window.webkitAudioContext)();
+    tl.gain = tl.ctx.createGain(); tl.gain.gain.value = 0.9; tl.gain.connect(tl.ctx.destination);
+  }
+  if (tl.ctx.state === "suspended") tl.ctx.resume();
+  return tl.ctx;
+}
+let tlScrubLast = 0, tlScrubBusy = false;
+async function tlScrubAt(sec) {
+  if (!tl.reader || !tl.clips.length) return;
+  const now = performance.now();
+  if (tlScrubBusy || now - tlScrubLast < 70) return;
+  tlScrubLast = now; tlScrubBusy = true;
+  try {
+    const ctx = tlEnsureCtx(), fv = state.timeline.fps, len = 0.12;
+    for (const c of tl.clips) {
+      if (!c.chans || !c.chans.length) continue;
+      const cs = c.inF / fv, ce = c.outF / fv;
+      if (sec < cs || sec >= ce) continue;
+      const sr = c.chans[0].sr, n = Math.round(len * sr), bufs = [];
+      for (const ch of c.chans) bufs.push(await tl.reader.readPcm(ch, ch.offset + Math.round((sec - cs) * sr), n));
+      if (!bufs[0].length) continue;
+      const ab = ctx.createBuffer(bufs.length, n, sr);
+      bufs.forEach((b, i) => ab.getChannelData(i).set(b.subarray(0, n)));
+      const g = ctx.createGain(), t0 = ctx.currentTime; // kort in-/utfade mot klick
+      g.gain.setValueAtTime(0, t0); g.gain.linearRampToValueAtTime(0.9, t0 + 0.01); g.gain.setValueAtTime(0.9, t0 + len - 0.02); g.gain.linearRampToValueAtTime(0, t0 + len);
+      const src = ctx.createBufferSource(); src.buffer = ab; src.connect(g); g.connect(tl.gain); src.start(t0); src.stop(t0 + len);
+    }
+  } catch (e) { console.warn("scrub", e); }
+  tlScrubBusy = false;
+}
 function tlSeek(sec) {
   const was = tl.playing; if (was) tlStop();
   tl.pos = Math.max(0, sec);
@@ -4581,10 +4614,7 @@ function tlToggle() { tl.playing ? tlStop() : tlPlay(); }
 async function tlPlay() {
   if (!tl.clips.length) { toast("Ingen tidslinje – importera en AAF först"); return; }
   if (!tl.reader) { tlNeedAudio(true, true); toast("Ljudet ligger i AAF-filen – klicka den lysande knappen Öppna AAF för ljud…"); return; }
-  if (!tl.ctx) {
-    tl.ctx = new (window.AudioContext || window.webkitAudioContext)();
-    tl.gain = tl.ctx.createGain(); tl.gain.gain.value = 0.9; tl.gain.connect(tl.ctx.destination);
-  }
+  tlEnsureCtx();
   await tl.ctx.resume();
   if (tl.pos >= tlDur() - 5) tl.pos = 0;
   tl.playing = true; tl.gen++; tl.t0 = tl.ctx.currentTime + 0.08; tl.pos0 = tl.pos; tl.sched = new Set(); tl.sources = [];
@@ -4663,8 +4693,25 @@ async function tlLoadChunk(c, a, b, cs, gen) {
     if (ev.button !== 0) return;
     const { sec, i } = tlClipAt(ev);
     tl.sel = i;
-    tlSeek(sec);
+    // håll musen nere och dra = flytta spelhuvudet och scrubba i ljudet
+    tl.drag = { wasPlaying: tl.playing, moved: false };
+    if (tl.playing) tlStop();
+    tl.pos = Math.max(0, sec); tlDraw();
     sc.focus({ preventScroll: true });
+    ev.preventDefault();
+  });
+  window.addEventListener("mousemove", ev => {
+    if (!tl.drag) return;
+    const rect = cv.getBoundingClientRect(), x = Math.max(0, Math.min(rect.width, ev.clientX - rect.left));
+    const sec = Math.max(0, (sc.scrollLeft + x) / tl.pxs);
+    if (Math.abs(sec - tl.pos) < 0.001) return;
+    tl.drag.moved = true; tl.pos = sec; tlDraw(); tlScrubAt(sec);
+    if (x < 24) sc.scrollLeft -= 8; else if (x > rect.width - 24) sc.scrollLeft += 8;
+  });
+  window.addEventListener("mouseup", () => {
+    if (!tl.drag) return;
+    const d = tl.drag; tl.drag = null;
+    if (d.wasPlaying) tlPlay();
   });
   cv.addEventListener("dblclick", ev => {
     const { i } = tlClipAt(ev);
