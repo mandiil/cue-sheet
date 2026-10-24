@@ -654,7 +654,7 @@ const SUPA = {
 <div id="rec-overlay" class="overlay" onmousedown="recDown=(event.target===this)" onmouseup="if(recDown&&event.target===this)closeRec();recDown=false">
   <div class="cm-box" role="dialog" aria-modal="true" style="max-width:960px">
     <div class="cm-head"><b>Stäm av mot befintliga cuer</b><span class="cm-sub" id="rec-sub"></span></div>
-    <div class="col-hint" style="padding:8px 18px 0">Varje inkommande klipp har kopplats till den befintliga cue som ligger närmast i TC (eller har samma namn). Matchade cuer behåller all inmatad information – bara det som saknas fylls i. Ändra kopplingen i rullistan om motorn gissat fel.</div>
+    <div class="col-hint" style="padding:8px 18px 0">Inkommande klipp kopplas i första hand på <b>ljudinnehåll</b> (cuer med sparat fingerprint känns igen även om de flyttats eller kortats), i andra hand på TC-närhet eller namn. Ligger <b>annan musik</b> där en cue tidigare låg flaggas det i orange – välj cuen i rullistan för att byta ut skissen, eller låt den bli en ny cue tills du tittat själv. Matchade cuer behåller all inmatad information.</div>
     <div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap;padding:10px 18px 4px;font-size:13px">
       <label>Tolerans <input id="rec-tol" type="number" value="10" min="1" max="600" step="1" style="width:60px" onchange="recRematch()"> s</label>
       <label><input type="checkbox" id="rec-updtc" checked onchange="recOpt()"> Uppdatera TC på matchade</label>
@@ -662,6 +662,7 @@ const SUPA = {
       <span>Nya cuer numreras:</span>
       <label><input type="radio" name="rec-num" value="ab" checked onchange="recOpt()"> a/b (7 → 7a, ny 7b)</label>
       <label><input type="radio" name="rec-num" value="renum" onchange="recOpt()"> löpnummer (ny 8, resten skiftas)</label>
+      <span id="rec-usenames-wrap" style="display:none;align-items:center;gap:6px"><input type="checkbox" id="rec-usenames" style="width:14px;height:14px;margin:0;flex:none" onchange="recOpt()"><label for="rec-usenames" style="display:inline;margin:0;text-transform:none;letter-spacing:0;font-size:13px;color:var(--text);cursor:pointer" title="SongSpot/AudD-förslag från auto-detekteringen. Förbockad bara när alla förslag är starka (≥ 60 %).">Skriv in föreslagna namn (SongSpot/AudD) som Temp (<span id="rec-usenames-n"></span>)</label></span>
     </div>
     <div id="rec-summary" class="col-hint" style="padding:0 18px 6px"></div>
     <div style="padding:0 18px;max-height:52vh;overflow:auto">
@@ -2728,14 +2729,23 @@ async function detIdentify(auto) {
   finally { detIdentifying = false; fpStatusSink = null; }
 }
 
-function addDetected() {
+async function addDetected() {
   const sel = detected.filter(r => r.sel);
   if (!sel.length) { toast("Inga cuer valda"); return; }
-  const clips = sel.map(r => {
+  // ljudfingerprint per region (första 20 s) för innehållsbaserad avstämning
+  let mono = null;
+  try {
+    if (!detMonoCache || detMonoCache.file !== detFile) { toast("Läser ljud för fingerprint…"); const m = await fpGetMono(detFile, "Mixdown"); detMonoCache = { file: detFile, samples: m.samples, sr: m.sr }; }
+    mono = detMonoCache;
+  } catch (e) { console.warn("mono", e); }
+  const clips = [];
+  for (const r of sel) {
     const m = r.matches && r.matchSel >= 0 ? r.matches[r.matchSel] : null;
     const name = m ? m.name : r.audd ? `${r.audd.artist} – ${r.audd.title}` : "";
-    return { name, tcIn: secToTC(r.start), tcOut: secToTC(r.end), note: `auto-detekterad · längd ${fmtSec(r.end - r.start)}` + (m ? ` · SongSpot ${m.score} %` : "") + (r.audd ? ` · AudD${r.audd.album ? " · " + r.audd.album : ""}${r.audd.spotify ? " · " + r.audd.spotify : ""}` : "") };
-  });
+    const clip = { name, nameSrc: name ? "suggest" : "", namePct: m ? m.score : (r.audd ? 100 : 0), tcIn: secToTC(r.start), tcOut: secToTC(r.end), note: `auto-detekterad · längd ${fmtSec(r.end - r.start)}` + (m ? ` · SongSpot ${m.score} %` : "") + (r.audd ? ` · AudD${r.audd.album ? " · " + r.audd.album : ""}${r.audd.spotify ? " · " + r.audd.spotify : ""}` : "") };
+    if (mono) { try { const a = Math.floor(r.start * mono.sr), b = Math.min(mono.samples.length, Math.floor(r.end * mono.sr)); const fp = await cueFpFromSamples(mono.samples.subarray(a, b), mono.sr); clip.fp = fp.flat; clip.fpDur = fp.dur; } catch (e) {} }
+    clips.push(clip);
+  }
   reconcileImport(clips, "auto-detektering");
   // fäll ihop panelen och visa tabellen
   if (detAudio) detAudio.pause();
@@ -3268,8 +3278,12 @@ function toggleArchive() {
 
 function idbOpen() {
   return new Promise((res, rej) => {
-    const r = indexedDB.open(ARCH_DB, 1);
-    r.onupgradeneeded = () => r.result.createObjectStore("tracks", { keyPath: "path" });
+    const r = indexedDB.open(ARCH_DB, 2);
+    r.onupgradeneeded = () => {
+      const db = r.result;
+      if (!db.objectStoreNames.contains("tracks")) db.createObjectStore("tracks", { keyPath: "path" });
+      if (!db.objectStoreNames.contains("cuefp")) db.createObjectStore("cuefp", { keyPath: "id" }); // fingerprint per cue (innehållsbaserad avstämning)
+    };
     r.onsuccess = () => res(r.result);
     r.onerror = () => rej(r.error);
   });
@@ -3884,6 +3898,70 @@ async function detAudd(i) {
   } catch (e) { if (e.cancelled) { detStatus(""); return false; } detStatus("AudD: " + (e.message || e)); toast(String(e.message || e)); return true; }
 }
 
+// ---------- Cue-fingerprint: de första ~20 s av varje cues ljud som hash-värden ----------
+// Används när en ny AAF/ljudfil kommer: inkommande klipp jämförs på INNEHÅLL med befintliga cuer
+// (samma musik flyttad/kortad känns igen även om TC ändrats; annan musik på samma plats flaggas).
+const CUEFP_SEC = 20, CUEFP_SR = 12000, CUEFP_BIN = 23; // 23 ramar ≈ 1 s vid 12 kHz / hop 512
+async function cueFpFromSamples(samples, sr) {
+  const dec = Math.max(1, Math.round(sr / CUEFP_SR)), osr = sr / dec, n = Math.min(samples.length, Math.floor(CUEFP_SEC * sr));
+  const m = Math.floor(n / dec), out = new Float32Array(m);
+  for (let i = 0; i < m; i++) { let a = 0; for (let k = 0; k < dec; k++) a += samples[i * dec + k]; out[i] = a / dec; }
+  const pairs = fpHashes(await fpPeaks(out, osr, null));
+  const flat = new Int32Array(pairs.length * 2); pairs.forEach(([h, t], i) => { flat[i * 2] = h; flat[i * 2 + 1] = t; });
+  return { flat, dur: m / osr };
+}
+function cueFpIndex(a) { // förbyggt index för ett inkommande fingerprint
+  const idx = new Map(), frames = new Set();
+  for (let i = 0; i < a.length; i += 2) { let arr = idx.get(a[i]); if (!arr) idx.set(a[i], arr = []); arr.push(a[i + 1]); frames.add(a[i + 1]); }
+  return { idx, n: frames.size || 1 };
+}
+function cueFpCoverage(ix, b) { // andel av A:s ramar som återfinns i B vid samma förskjutning (0..1)
+  if (!ix || !b || !b.length) return 0;
+  const bins = new Map();
+  for (let i = 0; i < b.length; i += 2) {
+    const arr = ix.idx.get(b[i]); if (!arr) continue;
+    for (const tA of arr) { const bin = Math.floor((b[i + 1] - tA) / CUEFP_BIN); let st = bins.get(bin); if (!st) bins.set(bin, st = new Set()); st.add(tA); }
+  }
+  let best = 0;
+  for (const [k, st] of bins) { const nx = bins.get(k + 1); let c = st.size; if (nx) nx.forEach(f => { if (!st.has(f)) c++; }); if (c > best) best = c; }
+  return Math.min(1, best / ix.n);
+}
+// lokal cache (IndexedDB "cuefp") + moln (Storage-bucket cuefp/<project>/<cue>.bin, tabell cue_fp)
+function cueFpPut(rec) { return idbOpen().then(db => new Promise((res, rej) => { const tx = db.transaction("cuefp", "readwrite"); tx.objectStore("cuefp").put(rec); tx.oncomplete = () => { db.close(); res(); }; tx.onerror = () => { db.close(); rej(tx.error); }; })); }
+function cueFpGet(id) { return idbOpen().then(db => new Promise((res, rej) => { const r = db.transaction("cuefp").objectStore("cuefp").get(id); r.onsuccess = () => { db.close(); res(r.result); }; r.onerror = () => { db.close(); rej(r.error); }; })); }
+async function cueFpStore(cueId, flat, dur) {
+  if (!cueId || !flat || !flat.length) return;
+  try { await cueFpPut({ id: cueId, flat, dur, ts: Date.now(), proj: cloudActive() ? cloud.project.id : "" }); } catch (e) {}
+  if (!cloudActive() || !isAdmin()) return;
+  try {
+    const pid = cloud.project.id, packed = await fpPack(flat);
+    const { error: e1 } = await sb.storage.from("cuefp").upload(`${pid}/${cueId}.bin`, new Blob([packed], { type: "application/octet-stream" }), { upsert: true });
+    if (e1) throw e1;
+    await sb.from("cue_fp").upsert({ project_id: pid, cue_id: cueId, n: flat.length / 2, bytes: packed.length, dur, updated_at: new Date().toISOString() });
+  } catch (e) { console.warn("cue-fingerprint moln", cueId, e); }
+}
+// hämtar fingerprints för alla cuer: lokalt först, annars från produktionens lagring → Map(cueId → flat)
+async function cueFpLoadFor(cues, status) {
+  const out = new Map(), missing = [];
+  for (const q of cues) { if (!q.id) continue; try { const r = await cueFpGet(q.id); if (r && r.flat) out.set(q.id, r.flat); else missing.push(q.id); } catch (e) { missing.push(q.id); } }
+  if (missing.length && cloudActive()) {
+    try {
+      const { data } = await sb.from("cue_fp").select("cue_id,dur").eq("project_id", cloud.project.id).in("cue_id", missing);
+      let k = 0;
+      for (const row of data || []) {
+        k++; if (status) status(`Hämtar cue-fingerprints … ${k}/${data.length}`);
+        try {
+          const { data: blob, error } = await sb.storage.from("cuefp").download(`${cloud.project.id}/${row.cue_id}.bin`);
+          if (error) continue;
+          const flat = await fpUnpack(new Uint8Array(await blob.arrayBuffer()));
+          out.set(row.cue_id, flat); await cueFpPut({ id: row.cue_id, flat, dur: row.dur, ts: Date.now(), proj: cloud.project.id });
+        } catch (e) {}
+      }
+    } catch (e) {}
+  }
+  return out;
+}
+
 // ---------- Avstämning vid import ----------
 // Alla importer (AAF, EDL/XML, auto-detektering) går via reconcileImport(): inkommande klipp
 // matchas mot befintliga cuer så att inmatad info, kommentarstrådar m.m. behålls.
@@ -3893,28 +3971,38 @@ function recNorm(s) { return (s || "").toLowerCase().replace(/\.(wav|aif|aiff|mp
 function recExisting() {
   return state.cues.map((q, i) => ({ i, q, no: (q.f && q.f.no) || "", name: cueName(q), tc: parseTC((q.f && q.f.tc) || "") }));
 }
-function reconcileImport(clips, src) {
-  const rows = clips.map(c => ({ name: (c.name || "").trim(), tcIn: c.tcIn, tcOut: c.tcOut || "", note: c.note || "", sub: c.sub,
-                                 inF: parseTC(c.tcIn || ""), outF: c.tcOut ? parseTC(c.tcOut) : null, match: -1, skip: false }))
+async function reconcileImport(clips, src) {
+  const rows = clips.map(c => ({ name: (c.name || "").trim(), nameSrc: c.nameSrc || "", namePct: c.namePct || 0, tcIn: c.tcIn, tcOut: c.tcOut || "", note: c.note || "", sub: c.sub, fp: c.fp || null, fpDur: c.fpDur || 0,
+                                 inF: parseTC(c.tcIn || ""), outF: c.tcOut ? parseTC(c.tcOut) : null, match: -1, skip: false, how: "", cov: 0 }))
                     .filter(r => r.inF != null).sort((a, b) => a.inF - b.inF);
   if (!rows.length) { toast("Inga klipp med giltig TC"); return; }
-  const opt = { tol: 10, updateTc: true, markMissing: true, numbering: "ab" };
+  const suggested = rows.filter(r => r.name && r.nameSrc === "suggest");
+  const opt = { tol: 10, updateTc: true, markMissing: true, numbering: "ab", useNames: suggested.length > 0 && suggested.every(r => r.namePct >= 60) };
   if (!recExisting().some(e => e.tc != null)) { applyReconcile(rows, src, { ...opt, markMissing: false }); return; }
-  recData = { rows, src, opt };
+  ensureCueIds();
+  let fpMap = new Map();
+  if (rows.some(r => r.fp)) { toast("Jämför ljudinnehåll med befintliga cuer…"); fpMap = await cueFpLoadFor(state.cues, m => toast(m)); }
+  recData = { rows, src, opt, fps: fpMap };
   document.getElementById("rec-tol").value = opt.tol;
   document.getElementById("rec-updtc").checked = true;
   document.getElementById("rec-missing").checked = true;
   document.querySelector('input[name="rec-num"][value="ab"]').checked = true;
-  document.getElementById("rec-sub").textContent = `${rows.length} klipp från ${src}`;
+  const un = document.getElementById("rec-usenames-wrap");
+  un.style.display = suggested.length ? "inline-flex" : "none";
+  document.getElementById("rec-usenames").checked = opt.useNames;
+  document.getElementById("rec-usenames-n").textContent = suggested.length;
+  document.getElementById("rec-sub").textContent = `${rows.length} klipp från ${src}` + (fpMap.size ? ` · ${fpMap.size} cuer med sparat ljudfingerprint` : "");
   recMatch(); renderRec();
   document.getElementById("rec-overlay").classList.add("open");
 }
+function recName(r, opt) { return r.nameSrc === "suggest" && !opt.useNames ? "" : r.name; }
 function closeRec() { document.getElementById("rec-overlay").classList.remove("open"); recData = null; }
 function recOpt() {
   if (!recData) return;
   recData.opt.updateTc = document.getElementById("rec-updtc").checked;
   recData.opt.markMissing = document.getElementById("rec-missing").checked;
   recData.opt.numbering = document.querySelector('input[name="rec-num"]:checked').value;
+  recData.opt.useNames = document.getElementById("rec-usenames").checked;
   renderRec();
 }
 function recRematch() {
@@ -3925,14 +4013,29 @@ function recRematch() {
 // matchning: närmast i TC (med löpande förskjutning), namnträff väger tyngre, omsynk vid bortklippt/tillagd scen
 function recMatch() {
   const { rows, opt } = recData, fv = fps(), tolF = opt.tol * fv, ex = recExisting().filter(e => e.tc != null);
+  const fpMap = recData.fps || new Map();
   const used = new Set(); let offset = 0, lastTc = -Infinity;
+  rows.forEach(r => { r.match = -1; r.how = ""; r.cov = 0; r.replaceCand = -1; });
+  // 1) Innehåll: inkommande klipp med fingerprint jämförs mot cuer med sparat fingerprint – bästa par först (täckning ≥ 50 %)
+  if (fpMap.size) {
+    const pairs = [];
+    rows.forEach((r, ri) => {
+      if (!r.fp) return;
+      const ix = cueFpIndex(r.fp); r._ix = ix;
+      ex.forEach(e => { const f = fpMap.get(state.cues[e.i].id); if (!f) return; const cov = cueFpCoverage(ix, f); if (cov >= 0.5) pairs.push({ ri, ei: e.i, cov }); });
+    });
+    pairs.sort((a, b) => b.cov - a.cov);
+    const usedR = new Set();
+    for (const p of pairs) { if (usedR.has(p.ri) || used.has(p.ei)) continue; usedR.add(p.ri); used.add(p.ei); rows[p.ri].match = p.ei; rows[p.ri].how = "content"; rows[p.ri].cov = p.cov; }
+  }
+  // 2) TC-närhet för resten
   rows.forEach((r, ri) => {
-    r.match = -1;
+    if (r.match >= 0) { const e = ex.find(x => x.i === r.match); if (e) { offset = r.inF - e.tc; lastTc = e.tc; } return; }
     const nn = recNorm(r.name);
     let best = null, bestScore = Infinity;
     ex.forEach(e => {
       if (used.has(e.i)) return;
-      const d = Math.abs(e.tc + offset - r.inF), nameHit = !!nn && recNorm(e.name) === nn;
+      const d = Math.min(Math.abs(e.tc + offset - r.inF), Math.abs(e.tc - r.inF)), nameHit = !!nn && recNorm(e.name) === nn; // med och utan löpande förskjutning
       if (d <= (nameHit ? tolF * 3 : tolF)) { const s = d - (nameHit ? tolF * 3 : 0); if (s < bestScore) { bestScore = s; best = e; } }
     });
     const fits = (clip, off, skipE) => !clip || ex.some(e2 => e2 !== skipE && !used.has(e2.i) && Math.abs(e2.tc + off - clip.inF) <= tolF);
@@ -3951,7 +4054,12 @@ function recMatch() {
       });
       best = cand;
     }
-    if (best) { used.add(best.i); r.match = best.i; offset = r.inF - best.tc; lastTc = best.tc; }
+    if (best) {
+      // båda har fingerprint men innehållet skiljer sig → annan musik på samma plats: fråga (förval: ny cue)
+      const f = r.fp && fpMap.get(state.cues[best.i].id);
+      if (f && cueFpCoverage(r._ix || (r._ix = cueFpIndex(r.fp)), f) < 0.2) { r.how = "replaced"; r.replaceCand = best.i; r.match = -1; offset = r.inF - best.tc; lastTc = best.tc; return; }
+      used.add(best.i); r.match = best.i; r.how = "tc"; offset = r.inF - best.tc; lastTc = best.tc;
+    }
   });
 }
 // planerar slutlig ordning och numrering (utan att ändra något) → { list, renames }
@@ -3999,34 +4107,39 @@ function renderRec() {
   const optsHtml = (sel) => `<option value="-1" ${sel < 0 ? "selected" : ""}>Ny cue</option>` +
     ex.map(e => `<option value="${e.i}" ${sel === e.i ? "selected" : ""}>${esc(e.no || "–")} · ${esc(e.name || "(namnlös)")}${e.tc != null ? " · " + esc(state.cues[e.i].f.tc) : ""}</option>`).join("");
   const rowsHtml = rows.map((r, i) => {
-    let res = "";
+    let res = "", how = "";
+    const nm = recName(r, opt);
+    if (r.how === "content") how = `<span style="color:#7fc99a" title="Ljudet känns igen: samma musik som cuen">samma musik ${Math.round(r.cov * 100)} %</span>`;
+    else if (r.how === "tc" && r.match >= 0) how = `<span style="color:var(--muted)" title="Matchad på tidkod (inget ljudfingerprint att jämföra med)">TC-närhet</span>`;
+    else if (r.how === "replaced") how = `<span style="color:#e0a040" title="På den här platsen låg tidigare annan musik. Välj cuen i rullistan för att byta ut skissen, eller låt den bli en ny cue tills du tittat själv.">⚠ annan musik på cue ${esc((state.cues[r.replaceCand].f || {}).no || "–")}:s plats</span>`;
     if (r.skip) res = `<span style="color:var(--muted)">hoppas över</span>`;
     else if (r.match >= 0) {
       const q = state.cues[r.match], f = q.f || {}, bits = [`<b>= cue ${esc(f.no || "–")}</b>`];
-      if (opt.updateTc && f.tc !== r.tcIn) bits.push(`TC ${esc(f.tc || "–")} → ${esc(r.tcIn)}`);
-      if (r.name && !f.temp && f.filename !== r.name) bits.push("Temp fylls i");
-      if (r.name && f.filename === r.name) bits.push("File Name flyttas till Temp");
-      if (r.name && f.temp && f.temp !== r.name) bits.push(`annat tempnamn (${esc(f.temp)})`);
+      if (opt.updateTc && f.tc !== r.tcIn) { const d = parseTC(f.tc || ""); bits.push(`TC ${esc(f.tc || "–")} → ${esc(r.tcIn)}` + (d != null ? ` (${r.inF > d ? "+" : "−"}${fmtSec(Math.abs(r.inF - d) / fv)})` : "")); }
+      if (r.outF != null && f.tcout) { const o = parseTC(f.tcout), od = o != null && parseTC(f.tc || "") != null ? o - parseTC(f.tc) : null, nd = r.outF - r.inF; if (od != null && Math.abs(nd - od) > fv) bits.push(nd < od ? `kortad ${fmtSec((od - nd) / fv)}` : `förlängd ${fmtSec((nd - od) / fv)}`); }
+      if (nm && !f.temp && f.filename !== nm) bits.push("Temp fylls i");
+      if (nm && f.filename === nm) bits.push("File Name flyttas till Temp");
+      if (nm && f.temp && f.temp !== nm) bits.push(r.how === "replaced" || r.how === "tc" ? `byter tempnamn (${esc(f.temp)} → ${esc(nm)})` : `annat tempnamn (${esc(f.temp)})`);
       if (counts.get(r.match) > 1) bits.push(`<span style="color:#d9534f">dubbel koppling!</span>`);
       res = bits.join(" · ");
     } else res = `<b>Ny cue ${esc(r.plannedNo || "")}</b>`;
     return `<tr class="${r.skip ? "unsel" : ""}">
       <td>${i + 1}</td>
-      <td style="min-width:240px"><b>${esc(r.name || "(namnlös)")}</b>${r.sub && r.sub.length ? ` <span style="color:var(--muted)">+${r.sub.length} fil${r.sub.length > 1 ? "er" : ""} ovanpå</span>` : ""}<br><span style="color:var(--muted);font-family:'SF Mono',Menlo,monospace;font-size:12px">${esc(r.tcIn)}${r.tcOut ? " – " + esc(r.tcOut) : ""}</span></td>
+      <td style="min-width:240px"><b>${esc(nm || (r.name ? "(förslag: " + r.name + ")" : "(namnlös)"))}</b>${r.sub && r.sub.length ? ` <span style="color:var(--muted)">+${r.sub.length} fil${r.sub.length > 1 ? "er" : ""} ovanpå</span>` : ""}<br><span style="color:var(--muted);font-family:'SF Mono',Menlo,monospace;font-size:12px">${esc(r.tcIn)}${r.tcOut ? " – " + esc(r.tcOut) : ""}</span>${how ? "<br>" + how : ""}</td>
       <td><select onchange="recSet(${i},parseInt(this.value,10))" ${r.skip ? "disabled" : ""}>${optsHtml(r.match)}</select></td>
       <td>${res}</td>
       <td style="text-align:center"><input type="checkbox" ${r.skip ? "checked" : ""} onchange="recSkip(${i},this.checked)" title="Hoppa över"></td>
     </tr>`;
   }).join("");
   document.getElementById("rec-table").innerHTML = `<thead><tr><th>#</th><th>Inkommande</th><th>Koppling</th><th>Resultat</th><th>Hoppa över</th></tr></thead><tbody>${rowsHtml}</tbody>`;
-  const nM = rows.filter(r => !r.skip && r.match >= 0).length, nN = rows.filter(r => !r.skip && r.match < 0).length;
+  const nM = rows.filter(r => !r.skip && r.match >= 0).length, nN = rows.filter(r => !r.skip && r.match < 0).length, nC = rows.filter(r => !r.skip && r.how === "content").length, nR = rows.filter(r => !r.skip && r.how === "replaced").length;
   const missing = recMissing(rows, opt);
   const ren = [...plan.renames.entries()].filter(([q, no]) => ((q.f && q.f.no) || "") !== no).map(([q, no]) => `${esc((q.f && q.f.no) || "–")}→${esc(no)}`);
-  document.getElementById("rec-summary").innerHTML = `${nM} matchade · ${nN} nya` +
+  document.getElementById("rec-summary").innerHTML = `${nM} matchade${nC ? ` (${nC} på ljudinnehåll)` : ""} · ${nN} nya` + (nR ? ` · <span style="color:#e0a040">${nR} med annan musik på befintlig plats – avgör i rullistan</span>` : "") +
     (opt.markMissing ? ` · ${missing.length} befintliga saknas i importen (markeras)` : "") +
     (ren.length ? ` · döps om: ${ren.slice(0, 12).join(", ")}${ren.length > 12 ? " …" : ""}` : "");
 }
-function recSet(i, v) { recData.rows[i].match = v; renderRec(); }
+function recSet(i, v) { const r = recData.rows[i]; r.match = v; if (r.how === "replaced" && v >= 0) r.how = "tc"; renderRec(); }
 function recSkip(i, on) { recData.rows[i].skip = on; renderRec(); }
 // befintliga cuer inom importens TC-spann som ingen matchade
 function recMissing(rows, opt) {
@@ -4049,17 +4162,21 @@ function applyReconcile(rows, src, opt) {
   const missing = opt.markMissing ? recMissing(rows, opt) : [];
   const plan = recPlan(rows, opt);
   let nUpd = 0, nNew = 0;
+  const fpJobs = [];
   rows.forEach(r => {
     if (r.skip || r.match < 0) return;
     const q = state.cues[r.match]; if (!q.f) q.f = {};
-    const notes = [];
+    const notes = [], nm = recName(r, opt);
+    if (r.how === "content") notes.push(`samma musik (${Math.round(r.cov * 100)} %)`);
     if (opt.updateTc && r.tcIn !== q.f.tc) { if (q.f.tc) notes.push(`TC ${q.f.tc} → ${r.tcIn}`); q.f.tc = r.tcIn; }
     if (hasTcout && r.tcOut && (opt.updateTc || !q.f.tcout)) q.f.tcout = r.tcOut;
-    if (r.name) {
-      if (q.f.filename === r.name) { q.f.temp = r.name; q.f.filename = ""; }
-      else if (!q.f.temp) { q.f.temp = r.name; notes.push("Temp: " + r.name); }
-      else if (q.f.temp !== r.name) notes.push("importen har annat tempnamn: " + r.name);
+    if (nm) {
+      if (q.f.filename === nm) { q.f.temp = nm; q.f.filename = ""; }
+      else if (!q.f.temp) { q.f.temp = nm; notes.push("Temp: " + nm); }
+      else if (q.f.temp !== nm && r.how !== "content") { notes.push(`skiss utbytt: ${q.f.temp} → ${nm}`); q.f.temp = nm; }
+      else if (q.f.temp !== nm) notes.push("importen har annat tempnamn: " + nm);
     }
+    if (r.fp) fpJobs.push([q, r]);
     if (q.f.missing) delete q.f.missing;
     if (r.sub) { if (r.sub.length) q.sub = r.sub.map(x => ({ temp: x.name, tc: x.tcIn, tcout: x.tcOut })); else delete q.sub; }
     if (r.note) notes.push(r.note);
@@ -4070,14 +4187,18 @@ function applyReconcile(rows, src, opt) {
   const out = [];
   plan.list.forEach(e => {
     if (e.q) { out.push(e.q); return; }
-    const r = e.row, f = { no: e.no, temp: r.name, tc: r.tcIn, comments: `Import ${src}` + (r.tcOut && !hasTcout ? ` · slut ${r.tcOut}` : "") + (r.note ? " · " + r.note : "") };
+    const r = e.row, nm = recName(r, opt), f = { no: e.no, temp: nm, tc: r.tcIn, comments: `Import ${src}` + (r.tcOut && !hasTcout ? ` · slut ${r.tcOut}` : "") + (r.note ? " · " + r.note : "") + (r.how === "replaced" ? ` · annan musik än cue ${(state.cues[r.replaceCand].f || {}).no || ""} på samma plats` : "") };
     if (hasTcout && r.tcOut) f.tcout = r.tcOut;
     if (hasCut) f.filmcut = state.meta.cut || "";
     const nc = { f };
     if (r.sub && r.sub.length) nc.sub = r.sub.map(x => ({ temp: x.name, tc: x.tcIn, tcout: x.tcOut }));
+    if (r.fp) fpJobs.push([nc, r]);
     out.push(nc); nNew++;
   });
   state.cues = out;
+  ensureCueIds();
+  // spara ljudfingerprint per cue (lokalt + produktionens lagring) för nästa avstämning
+  if (fpJobs.length) (async () => { for (const [q, r] of fpJobs) await cueFpStore(q.id, r.fp, r.fpDur); })();
   if (/^AAF /.test(src)) state.fnMode = "temp"; // efter AAF-import vill man se tempnamnen
   missing.forEach(e => { if (!e.q.f) e.q.f = {}; e.q.f.missing = "x"; e.q.f.comments = (e.q.f.comments ? e.q.f.comments + " · " : "") + `Saknas i importen ${src}`; });
   render(); save();
@@ -4403,7 +4524,7 @@ function renderAafTracks() {
   }).join("");
 }
 function closeAaf() { document.getElementById("aaf-overlay").classList.remove("open"); }
-function confirmAaf() {
+async function confirmAaf() {
   const c = aafData[parseInt(document.getElementById("aaf-seq").value || "0", 10)];
   const merge = document.getElementById("aaf-merge").checked;
   const picked = [...document.querySelectorAll("#aaf-tracks input[data-track]:checked")].map(x => c.tracks[parseInt(x.dataset.track, 10)]);
@@ -4415,7 +4536,7 @@ function confirmAaf() {
     cl.forEach(x => {
       const name = aafClipName(x.name), inF = Math.round(x.pos / t.rate * c.fps), outF = Math.round((x.pos + x.len) / t.rate * c.fps);
       if (merge && cur && cur.name === name && inF <= cur.outF + 3 * c.fps) { /* samma namn inom 3 s = samma cue */ cur.outF = Math.max(cur.outF, outF); return; }
-      cur = { name, inF, outF, track: t.name };
+      cur = { name, inF, outF, track: t.name, comp: x.comp, rate: t.rate };
       rows.push(cur);
     });
   });
@@ -4431,10 +4552,25 @@ function confirmAaf() {
   clips.forEach(r => {
     const g = groups[groups.length - 1];
     if (g && r.inF < g.outF - c.fps) { g.sub.push(r); g.outF = Math.max(g.outF, r.outF); }
-    else groups.push({ name: r.name, inF: r.inF, outF: r.outF, track: r.track, sub: [] });
+    else groups.push({ name: r.name, inF: r.inF, outF: r.outF, track: r.track, comp: r.comp, rate: r.rate, sub: [] });
   });
   const tcs = f => fmtTC(c.start + f, c.fps);
-  reconcileImport(groups.map(g => ({ name: g.name, tcIn: tcs(g.inF), tcOut: tcs(g.outF), note: g.track ? `spår ${g.track}` : "",
+  // ljudfingerprint (första 20 s) per cue – för innehållsbaserad avstämning nu och vid nästa import
+  if (aafReader) {
+    for (let i = 0; i < groups.length; i++) {
+      const g = groups[i];
+      try {
+        toast(`Fingerprintar klipp ${i + 1}/${groups.length}…`);
+        const chans = await aafReader.channels(g.comp, g.rate);
+        if (chans.length) {
+          const ch = chans[0], n = Math.min(Math.floor(CUEFP_SEC * ch.sr), Math.floor((g.outF - g.inF) / c.fps * ch.sr));
+          const samples = await aafReader.readPcm(ch, ch.offset, n);
+          const fp = await cueFpFromSamples(samples, ch.sr); g.fp = fp.flat; g.fpDur = fp.dur;
+        }
+      } catch (e) { console.warn("fingerprint", g.name, e); }
+    }
+  }
+  reconcileImport(groups.map(g => ({ name: g.name, tcIn: tcs(g.inF), tcOut: tcs(g.outF), note: g.track ? `spår ${g.track}` : "", fp: g.fp, fpDur: g.fpDur,
     sub: g.sub.map(x => ({ name: x.name, tcIn: tcs(x.inF), tcOut: tcs(x.outF) })) })), "AAF " + aafFileName);
   if (aafReader) tlBuild(aafReader, c, picked);
 }
