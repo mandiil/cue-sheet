@@ -919,7 +919,7 @@ const DEFAULT_COLUMNS = [
   { id: "mixver",   label: "Mix Version",     type: "text",   group: 3 },
   { id: "mixcomm",  label: "Mix Prep Comments", type: "comment", group: 3 },
 ];
-const COL_VERSION = 5;
+const COL_VERSION = 4;
 const GROUP_NAMES = ["Alltid synlig", "View One", "View Two", "View Three"];
 
 // ---------- Mallar ----------
@@ -1000,7 +1000,7 @@ function addPreset(id) {
   toast(`Kolumn tillagd: ${col.label}`);
 }
 
-const TPL_VERSION = 7;
+const TPL_VERSION = 8;
 // Uppdatera redan sparade ark när en mall justeras
 function migrateTemplate(s) {
   if ((s.tplVer || 1) >= TPL_VERSION) return;
@@ -1017,6 +1017,18 @@ function migrateTemplate(s) {
     else out = { id: "tcout", label: "TC OUT", type: "tc", group: 1 };
     const ti = s.columns.findIndex(c => c.id === "tc");
     s.columns.splice(ti >= 0 ? ti + 1 : s.columns.length, 0, out);
+  }
+  // v8 (film, 2026-10-24): Pre rec comments i View Two och Mix Prep Comments i View Three blir kommentarstrådar
+  // med samma knapp/historik som Comments (gammal fritext i Mix Prep Comments flyttas in som Note vid rendering)
+  if (s.template === "film" && (s.tplVer || 1) < 8) {
+    const mc = s.columns.find(c => c.id === "mixcomm");
+    if (mc && mc.type === "text") mc.type = "comment";
+    if (!s.columns.some(c => c.id === "prerec")) {
+      const oi = s.columns.findIndex(c => c.id === "orchimp");
+      const g2 = s.columns.map((c, i) => c.group === 2 ? i : -1).filter(i => i >= 0);
+      const at = oi >= 0 ? oi + 1 : (g2.length ? g2[g2.length - 1] + 1 : s.columns.length);
+      s.columns.splice(at, 0, { id: "prerec", label: "Pre rec comments", type: "comment", group: 2 });
+    }
   }
   if (s.template === "teater") {
     const col = id => s.columns.find(c => c.id === id);
@@ -3134,9 +3146,6 @@ function load() {
   // Comments-kolumnen är numera en kommentarsknapp (gammal fritext flyttas in i tråden vid rendering)
   const cc = state.columns.find(c => c.id === "comments");
   if (cc && cc.type === "text") cc.type = "comment";
-  // Mix Prep Comments blev kommentarstråd 2026-10-24 (samma utseende som Comments, gammal text flyttas in som Note)
-  const mc = state.columns.find(c => c.id === "mixcomm");
-  if (mc && mc.type === "text") mc.type = "comment";
   // lägg till nytillkomna standardkolumner i sparade projekt
   if ((state.colVer || 1) < COL_VERSION) {
     DEFAULT_COLUMNS.forEach(dc => {
