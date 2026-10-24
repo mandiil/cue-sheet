@@ -763,6 +763,7 @@ const SUPA = {
     <button onclick="detIdentify()" title="Söker alla cuer mot ditt lokala SongSpot-arkiv (gratis)">Identifiera innehåll (SongSpot)</button>
     <button onclick="detAuddMarked()" title="Extern sökning via AudD för markerade cuer (shift-klicka i vågformen eller 'markera' i listan). 1 sökning per cue.">Identifiera innehåll (AudD)</button>
     <span style="flex:1"></span>
+    <span style="display:inline-flex;align-items:center;gap:5px;white-space:nowrap" title="Listan scrollar själv till cuen du pekar på i vågformen"><input type="checkbox" id="det-follow" style="width:14px;height:14px;margin:0;flex:none" onchange="detSetFollow(this.checked)"><label for="det-follow" style="display:inline;margin:0;font-size:12px;text-transform:none;letter-spacing:0;color:var(--muted);cursor:pointer;white-space:nowrap">Följ i listan</label></span>
     <button onclick="zoomWave(0.5)">Zooma in +</button>
     <button onclick="zoomWave(2)">Zooma ut −</button>
     <button onclick="zoomAll()">Hela filen</button>
@@ -2421,13 +2422,15 @@ function regionAtX(e) {
   const t = v.s + Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width)) * (v.e - v.s);
   return detected.findIndex(r => t >= r.start && t <= r.end);
 }
+let detFollow = false; try { detFollow = !!localStorage.getItem("det-follow"); } catch (e) {}
+function detSetFollow(on) { detFollow = on; try { localStorage.setItem("det-follow", on ? "1" : ""); } catch (e) {} }
 function setDetHover(i, fromList) {
   if (i === detHover) return;
   detHover = i;
   document.querySelectorAll("#det-results tr[data-i]").forEach(tr => {
     const on = parseInt(tr.dataset.i, 10) === i;
     tr.classList.toggle("hover", on);
-    if (on && !fromList) tr.scrollIntoView({ block: "nearest" });
+    if (on && !fromList && detFollow) tr.scrollIntoView({ block: "nearest" });
   });
   redrawWave();
 }
@@ -5622,6 +5625,7 @@ async function setLevel(uid, level) {
 load();
 render();
 initWaveEvents();
+try { document.getElementById("det-follow").checked = detFollow; } catch (e) {}
 cloudInit();
 </script>
 </body>
