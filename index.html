@@ -5038,7 +5038,7 @@ async function openProjects() {
     const ownerName = p.owner === cloud.user.id ? "du" : (ownerM && ownerM.profiles && ownerM.profiles.username) || "";
     const inactive = p.active === false, mayToggle = p.owner === cloud.user.id || cloud.level === "superadmin";
     return `<div class="proj-row" style="${inactive ? "opacity:.6" : ""}">
-      <div style="flex:1"><b>${esc(p.name)}</b>${inactive ? ` <span class="role-pill" style="background:#555;color:#eee" title="Inaktiv: skrivskyddad, delat SongSpot-arkiv och vågformer rensade">Inaktiv</span>` : ""}<div class="muted">${esc((TEMPLATES[p.template] || {}).name || p.template)}${ownerName ? " · ägare: " + esc(ownerName) : ""} · ändrad ${fmtTs(p.updated_at)}</div></div>
+      <div style="flex:1"><b>${esc(p.name)}</b>${inactive ? ` <span class="role-pill" style="background:#e06b6b;color:#1a0b0b" title="Inaktiv: skrivskyddad, delat SongSpot-arkiv och vågformer rensade">Inaktiv</span>` : ""}<div class="muted">${esc((TEMPLATES[p.template] || {}).name || p.template)}${ownerName ? " · ägare: " + esc(ownerName) : ""} · ändrad ${fmtTs(p.updated_at)}</div></div>
       <span class="role-pill ${r}">${ROLE_LABEL[r]}</span>
       ${mayToggle ? `<button class="icon" title="${inactive ? "Aktivera produktionen igen (redigering öppnas; delade arkiv får delas om)" : "Inaktivera: skrivskydda och rensa molndata som tar plats (delat SongSpot-arkiv, vågformer, äldre versioner). Cuer, kommentarer och de 5 senaste versionerna behålls."}" onclick="setProjectActive('${p.id}','${esc(p.name)}',${inactive ? "true" : "false"})">${inactive ? "● Aktivera" : "○ Inaktivera"}</button>` : ""}
       <button class="primary" onclick="closeProjects();openProject('${p.id}')">Öppna</button>
@@ -5109,7 +5109,7 @@ async function openProject(id) {
   applyRole();
   subscribeProject(p.id);
   document.getElementById("cloud-proj").innerHTML = `· <b>${esc(p.name)}</b> <span class="role-pill ${role}">${ROLE_LABEL[role]}</span>` +
-    (p.active === false ? ` <span class="role-pill" style="background:#555;color:#eee" title="Skrivskyddad. Ägaren eller Admin kan aktivera igen under Produktioner…">INAKTIV</span>` : "");
+    (p.active === false ? ` <span class="role-pill" style="background:#e06b6b;color:#1a0b0b" title="Skrivskyddad. Ägaren eller Admin kan aktivera igen under Produktioner…">INAKTIV</span>` : "");
   updateInviteBtn();
   cstatus(p.active === false ? "inaktiv – skrivskyddad" : "synkad");
   return true;
