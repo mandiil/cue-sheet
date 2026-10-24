@@ -2524,7 +2524,7 @@ function renderDetected() {
         ? `<select title="${esc(r.matches.map(m => m.path).join("\n"))}"
              onchange="detected[${i}].matchSel=parseInt(this.value);this.title=detected[${i}].matches[this.value].path">` +
           r.matches.map((m, mi) =>
-            `<option value="${mi}" ${r.matchSel === mi ? "selected" : ""}>${esc(m.name)} (${m.score})</option>`).join("") +
+            `<option value="${mi}" ${r.matchSel === mi ? "selected" : ""}>${esc(m.name)} (${m.score} %)</option>`).join("") +
           `</select>`
         : `<span style="color:var(--muted)">${r.matches ? "okänd" : "–"}</span>`}</td>
       <td style="white-space:nowrap">
@@ -2569,7 +2569,7 @@ async function detIdentify(auto) {
     const frameDur = FP_HOP / sr;
     // gemensamt index: hash → [[regionIdx, t1], ...]
     const idx = new Map();
-    const regHashCount = detected.map(() => 0);
+    const regFrames = detected.map(() => new Set());
     detected.forEach((r, ri) => {
       const f0 = r.start / frameDur, f1 = r.end / frameDur;
       const rp = peaks.filter(p => p.t >= f0 && p.t <= f1);
@@ -2577,9 +2577,10 @@ async function detIdentify(auto) {
         let arr = idx.get(h);
         if (!arr) idx.set(h, arr = []);
         arr.push([ri, t]);
-        regHashCount[ri]++;
+        regFrames[ri].add(t);
       }
     });
+    const regFrameCount = regFrames.map(st => st.size || 1);
     const found = detected.map(() => new Map()); // ri → path → {score,name,path}
     let scanned = 0;
     detStatus(`Söker bland ${total} filer i arkivet …`);
@@ -2587,7 +2588,7 @@ async function detIdentify(auto) {
       scanned++;
       if (scanned % 50 === 0) detStatus(`Söker i arkivet … ${scanned} av ${total} filer genomsökta`);
       const tfd = FP_HOP / track.sr;
-      const per = new Map(); // ri → Map(offset-bin → count)
+      const per = new Map(); // ri → Map(offset-bin → Set(tC))
       const H = track.hashes;
       for (let i = 0; i < H.length; i += 2) {
         const arr = idx.get(H[i]);
@@ -2596,15 +2597,15 @@ async function detIdentify(auto) {
           const bin = Math.floor(H[i + 1] * tfd - tC * frameDur);
           let m = per.get(ri);
           if (!m) per.set(ri, m = new Map());
-          m.set(bin, (m.get(bin) || 0) + 1);
+          let st = m.get(bin); if (!st) m.set(bin, st = new Set());
+          st.add(tC);
         }
       }
       for (const [ri, m] of per) {
         let best = 0;
-        for (const [b, c] of m) best = Math.max(best, c + (m.get(b + 1) || 0));
-        if (best >= Math.max(10, regHashCount[ri] * 0.03)) {
-          found[ri].set(track.path, { score: best, name: track.name, path: track.path });
-        }
+        for (const [b, st] of m) { const nx = m.get(b + 1); let c = st.size; if (nx) nx.forEach(f => { if (!st.has(f)) c++; }); best = Math.max(best, c); }
+        const pct = Math.min(100, Math.round(best / regFrameCount[ri] * 100));
+        if (pct >= 5) found[ri].set(track.path, { score: pct, name: track.name, path: track.path });
       }
     });
     detected.forEach((r, ri) => {
@@ -2624,7 +2625,7 @@ function addDetected() {
   const clips = sel.map(r => {
     const m = r.matches && r.matchSel >= 0 ? r.matches[r.matchSel] : null;
     const name = m ? m.name : r.audd ? `${r.audd.artist} – ${r.audd.title}` : "";
-    return { name, tcIn: secToTC(r.start), tcOut: secToTC(r.end), note: `auto-detekterad · längd ${fmtSec(r.end - r.start)}` + (m ? ` · SongSpot ${m.score}` : "") + (r.audd ? ` · AudD${r.audd.album ? " · " + r.audd.album : ""}${r.audd.spotify ? " · " + r.audd.spotify : ""}` : "") };
+    return { name, tcIn: secToTC(r.start), tcOut: secToTC(r.end), note: `auto-detekterad · längd ${fmtSec(r.end - r.start)}` + (m ? ` · SongSpot ${m.score} %` : "") + (r.audd ? ` · AudD${r.audd.album ? " · " + r.audd.album : ""}${r.audd.spotify ? " · " + r.audd.spotify : ""}` : "") };
   });
   reconcileImport(clips, "auto-detektering");
   // fäll ihop panelen och visa tabellen
@@ -3464,35 +3465,39 @@ async function archiveIdentify() {
       if (!arr) idx.set(h, arr = []);
       arr.push(t);
     }
-    const thr = Math.max(15, clipHashes.length * 0.05);
+    // Täckning: hur stor andel av klippets tidsramar som hittas i arkivfilen vid en och samma förskjutning.
+    // Unika ramar (inte råa par) – annars vinner långa, repetitiva filer (t.ex. ett syntljud) över ett kort, exakt original.
+    const clipFrames = new Set(clipHashes.map(x => x[1])).size || 1;
+    const clipDur = samples.length / sr;
     const results = [];
     let scanned = 0;
     archStatus(`Söker bland ${total} filer …`);
     await idbEachTrack(track => {
       scanned++;
       const frameDur = FP_HOP / track.sr;
-      const counts = new Map();
+      const bins = new Map(); // offset-bin (s) → { frames:Set(tC), sum, n }
       const H = track.hashes;
       for (let i = 0; i < H.length; i += 2) {
         const arr = idx.get(H[i]);
         if (!arr) continue;
         for (const tC of arr) {
-          const offSec = (H[i + 1] - tC) * frameDur;
-          const bin = Math.floor(offSec);
-          let e = counts.get(bin);
-          if (!e) counts.set(bin, e = [0, 0]);
-          e[0]++; e[1] += offSec;
+          const offSec = (H[i + 1] - tC) * frameDur, bin = Math.floor(offSec);
+          let e = bins.get(bin);
+          if (!e) bins.set(bin, e = { frames: new Set(), sum: 0, n: 0 });
+          e.frames.add(tC); e.sum += offSec; e.n++;
         }
       }
       let best = null;
-      for (const [b, e] of counts) {
-        const n = counts.get(b + 1) || [0, 0];
-        const c = e[0] + n[0];
-        if (c >= thr && (!best || c > best.c)) best = { c, pos: (e[1] + n[1]) / c };
+      for (const [b, e] of bins) {
+        const nx = bins.get(b + 1);
+        const fr = new Set(e.frames); if (nx) nx.frames.forEach(f => fr.add(f));
+        const cov = fr.size / clipFrames, n = e.n + (nx ? nx.n : 0), sum = e.sum + (nx ? nx.sum : 0);
+        if (cov >= 0.05 && (!best || cov > best.cov)) best = { cov, n, pos: sum / n };
       }
-      if (best) results.push({ name: track.name, path: track.path, by: track.by, proj: track.proj, folder: track.folder, pos: Math.max(0, best.pos), dur: track.dur, score: best.c });
+      if (best) results.push({ name: track.name, path: track.path, by: track.by, proj: track.proj, folder: track.folder, pos: Math.max(0, best.pos), dur: track.dur,
+                               pct: Math.min(100, Math.round(best.cov * 100)), score: best.n, durDiff: Math.abs(Math.log((track.dur || 1) / (clipDur || 1))) });
     });
-    results.sort((a, b) => b.score - a.score);
+    results.sort((a, b) => (b.pct - a.pct) || (a.durDiff - b.durDiff)); // lika täckning → närmast i längd först
     archStatus(`${file.name} → ` + (results.length
       ? `${results.length} möjliga ursprung hittade (${scanned} filer genomsökta)`
       : `ingen träff bland ${scanned} filer — ursprunget finns inte i arkivet ännu`));
@@ -3512,8 +3517,7 @@ function renderArchResults(results, keepToggle) {
   if (!keepToggle) { archLastResults = results; archShowWeak = false; }
   const el = document.getElementById("arch-results");
   if (!results.length) { el.innerHTML = ""; return; }
-  const best = results[0].score || 1;
-  const rows = results.map(r => ({ ...r, pct: Math.round(r.score / best * 100) }));
+  const rows = results.map(r => ({ ...r, pct: r.pct != null ? r.pct : 0 }));
   const strong = rows.filter(r => r.pct >= 20), weak = rows.filter(r => r.pct < 20);
   const label = p => p >= 60 ? "stark" : p >= 20 ? "möjlig" : "svag";
   const row = r => `<tr style="${r.pct < 20 ? "opacity:.7" : ""}">
@@ -3523,12 +3527,12 @@ function renderArchResults(results, keepToggle) {
       <td class="mono" style="white-space:nowrap"><span style="display:inline-block;min-width:44px;text-align:right;color:${archColor(r.pct)};font-weight:600">${r.pct} %</span> <span style="color:${archColor(r.pct)}">${label(r.pct)}</span> <span style="color:var(--muted);font-size:11px">(${r.score})</span></td>
     </tr>`;
   el.innerHTML = `<table class="det-table">
-    <thead><tr><th>Ursprungsfil</th><th>Sökvägen</th><th>Klippet börjar</th><th title="Andel av bästa träffens fingerprint-par. 100 % = samma fil. Höga värden på andra filer = versioner/syskon av samma cue.">Styrka</th></tr></thead><tbody>` +
+    <thead><tr><th>Ursprungsfil</th><th>Sökvägen</th><th>Klippet börjar</th><th title="Täckning: andel av klippets tidsramar som återfinns i arkivfilen vid samma förskjutning. 100 % = hela klippet finns i filen.">Täckning</th></tr></thead><tbody>` +
     strong.map(row).join("") +
     (weak.length ? (archShowWeak ? weak.map(row).join("") : "") +
       `<tr><td colspan="4" style="text-align:center"><button class="icon" onclick="archShowWeak=!archShowWeak;renderArchResults(archLastResults,true)">${archShowWeak ? "dölj" : "visa"} ${weak.length} svaga träffar (under 20 %)</button></td></tr>` : "") +
     `</tbody></table>
-    <div class="col-hint" style="margin-top:6px">Styrkan är andelen av bästa träffens fingerprint-par. 100 % = samma fil · 60–99 % = versioner eller syskon av samma cue · 20–60 % = delar material (loopar, samples) · under 20 % = troligen brus.</div>`;
+    <div class="col-hint" style="margin-top:6px">Täckning = hur stor del av klippet som återfinns i filen. ~100 % = hela klippet finns där (originalet, eller en version som innehåller det) · 60–99 % = versioner/syskon av samma cue · 20–60 % = delar material (loopar, samples) · under 20 % = troligen brus. Vid lika täckning hamnar filen med mest lik längd först. Mycket korta eller repetitiva klipp (t.ex. en ensam kick) ger många höga träffar – ta ett längre utklipp om det går.</div>`;
 }
 
 async function archiveClear() {
