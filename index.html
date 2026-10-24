@@ -679,8 +679,8 @@ const SUPA = {
 <div class="panel" id="detect-panel">
   <label style="margin-bottom:10px">Auto-detektera cuer i ljudfil</label>
   <div class="det-grid">
-    <div><label>Ljudfil (WAV säkrast)</label><input type="file" id="audio-in" accept="audio/*,.wav,.aif,.aiff,.mp3,.flac"></div>
-    <div><label>Filens start-TC</label><input id="det-offset" class="tc" value="01:00:00:00"></div>
+    <div><label>Ljudfil (WAV säkrast)</label><input type="file" id="audio-in" accept="audio/*,.wav,.aif,.aiff,.mp3,.flac" onchange="bwfPrefill(this.files[0])"></div>
+    <div><label>Filens start-TC</label><input id="det-offset" class="tc" value="01:00:00:00" title="SMPTE-positionen där bouncen börjar i Logic/Pro Tools (t.ex. 00:59:32:00). Läses automatiskt ur WAV-filen om den har en BWF-tidsstämpel."><div id="det-offset-hint" style="font-size:11px;color:var(--muted);margin-top:3px"></div></div>
     <div><label>Tröskel (dBFS)</label><input id="det-thresh" type="number" value="-70" step="1"></div>
     <div><label>Min tystnad mellan cuer (s)</label><input id="det-gap" type="number" value="2" step="0.5" min="0.5"></div>
     <div><label>Min cue-längd (s)</label><input id="det-minlen" type="number" value="4" step="1" min="1"></div>
@@ -2087,6 +2087,32 @@ function toggleDetect() {
   syncPanelBtns();
 }
 function detStatus(msg) { document.getElementById("det-status").textContent = msg; }
+
+// BWF (Broadcast Wave): bext-chunkens TimeReference = samples sedan midnatt där filen börjar.
+// Logic/Pro Tools/Nuendo skriver den vid bounce → vi kan fylla i start-TC automatiskt.
+async function readBwfStart(file) {
+  const hd = new DataView(await file.slice(0, 65536).arrayBuffer());
+  const tag = o => String.fromCharCode(hd.getUint8(o), hd.getUint8(o + 1), hd.getUint8(o + 2), hd.getUint8(o + 3));
+  if (hd.byteLength < 12 || tag(0) !== "RIFF") return null;
+  let pos = 12, sr = 0, ref = null;
+  while (pos + 8 <= hd.byteLength) {
+    const id = tag(pos), size = hd.getUint32(pos + 4, true);
+    if (id === "fmt ") sr = hd.getUint32(pos + 12, true);
+    else if (id === "bext" && pos + 8 + 346 <= hd.byteLength) ref = hd.getUint32(pos + 8 + 342, true) * 4294967296 + hd.getUint32(pos + 8 + 338, true);
+    else if (id === "data") break;
+    pos += 8 + size + (size % 2);
+  }
+  return ref != null && sr ? { seconds: ref / sr } : null;
+}
+async function bwfPrefill(file) {
+  const el = document.getElementById("det-offset"), hint = document.getElementById("det-offset-hint");
+  if (!file) { hint.textContent = ""; return; }
+  try {
+    const b = await readBwfStart(file);
+    if (b && b.seconds > 0) { el.value = fmtTC(Math.round((b.seconds % 86400) * fps())); hint.textContent = "läst ur filen (BWF-tidsstämpel)"; }
+    else hint.textContent = "ingen tidsstämpel i filen – ange var bouncen börjar (SMPTE i Logic)";
+  } catch (e) { hint.textContent = ""; }
+}
 
 let detFile = null;
 async function analyzeAudio() {
