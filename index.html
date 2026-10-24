@@ -113,6 +113,9 @@ const SUPA = {
   #detect-panel { display: none; }
   #detect-panel.open { display: block; }
   #tl-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+  button.undo { background: #6e4a2a; border-color: #8a5d35; color: #f0d9c0; }
+  button.undo:hover:not(:disabled) { background: #85593a; }
+  button.undo:disabled { opacity: 0.4; cursor: not-allowed; }
   .fn-toggle { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
   .fn-toggle button { background: none; border: none; padding: 0 2px; margin: 0; font: inherit; color: var(--muted); opacity: .55; cursor: pointer; letter-spacing: inherit; text-transform: inherit; }
   .fn-toggle button:hover { opacity: .9; }
@@ -690,9 +693,9 @@ const SUPA = {
   </div>
   <audio id="det-audio" preload="auto" style="display:none"></audio>
   <div id="det-tools" style="display:none;gap:8px;margin-top:10px;flex-wrap:wrap">
+    <button id="det-undo" class="undo" onclick="detUndoStep()" disabled title="Ångra senaste dela/slå ihop/omdetektering (Cmd+Z)">↶ Ångra</button>
     <button onclick="splitAtPlayhead()">Dela cue vid spelhuvudet</button>
     <button onclick="mergeSelected()" title="Shift-klicka på cuer i vågformen (eller 'markera' i listan) och slå ihop dem">Slå ihop markerade</button>
-    <button id="det-undo" onclick="detUndoStep()" disabled title="Ångra senaste dela/slå ihop/omdetektering (Cmd+Z)">Ångra</button>
     <button onclick="detIdentify()" title="Söker alla cuer mot ditt lokala SongSpot-arkiv (gratis)">Identifiera innehåll (SongSpot)</button>
     <button onclick="detAuddMarked()" title="Extern sökning via AudD för markerade cuer (shift-klicka i vågformen eller 'markera' i listan). 1 sökning per cue.">Identifiera innehåll (AudD)</button>
     <span style="flex:1"></span>
