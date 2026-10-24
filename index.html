@@ -148,7 +148,8 @@ const SUPA = {
   .chat-m button.icon { opacity: 0; padding: 0 6px; }
   .chat-m:hover button.icon { opacity: 1; }
   .chat-input { display: flex; gap: 8px; margin-top: 6px; align-items: flex-end; }
-  .chat-input textarea { resize: none; min-height: 36px; max-height: 96px; font-family: inherit; }
+  .chat-input textarea { flex: 1; width: auto; resize: none; min-height: 36px; max-height: 96px; font-family: inherit; line-height: 1.35; }
+  .chat-input button { flex: none; }
   .chat-input textarea:focus { outline: none; border-color: var(--accent-dim); }
   button.undo { background: #6e4a2a; border-color: #8a5d35; color: #f0d9c0; }
   button.undo:hover:not(:disabled) { background: #85593a; }
@@ -493,7 +494,7 @@ const SUPA = {
       </div>
       <div class="chat-msgs" id="chat-msgs"></div>
       <div class="chat-input">
-        <textarea id="chat-text" rows="1" placeholder="Skriv ett meddelande… #12 blir en länk till cue 12 · Enter skickar, Shift+Enter ny rad" onkeydown="chatKey(event)" oninput="this.style.height='auto';this.style.height=Math.min(96,this.scrollHeight)+'px'"></textarea>
+        <textarea id="chat-text" rows="1" placeholder="Skriv ett meddelande… (#12 blir en länk till cue 12 · Enter skickar)" onkeydown="chatKey(event)" oninput="this.style.height='auto';this.style.height=Math.min(96,this.scrollHeight)+'px'"></textarea>
         <button class="primary" onclick="chatSend()">Skicka</button>
       </div>
     </div>
@@ -5836,10 +5837,10 @@ function toggleChat(on) {
   chat.open = on === undefined ? !chat.open : !!on;
   document.getElementById("chat-panel").style.display = chat.open ? "" : "none";
   try { localStorage.setItem("chat-open", chat.open ? "1" : "0"); } catch (e) {}
-  if (chat.open) { renderChat(); chatMarkRead(chat.chan); setTimeout(() => document.getElementById("chat-text").focus(), 30); }
+  if (chat.open) { chatMarkRead(chat.chan); renderChat(); setTimeout(() => document.getElementById("chat-text").focus(), 30); }
   updateChatBadge();
 }
-function chatSelect(chan) { chat.chan = chan; renderChat(); chatMarkRead(chan); document.getElementById("chat-text").focus(); }
+function chatSelect(chan) { chat.chan = chan; chatMarkRead(chan); renderChat(); document.getElementById("chat-text").focus(); }
 function chatSetSound(v) { chat.sound = v; try { localStorage.setItem("chat-sound", v ? "1" : "0"); } catch (e) {} }
 function chatSetNotifyAll(v) { chat.notifyAll = v; try { localStorage.setItem("chat-notify-all", v ? "1" : "0"); } catch (e) {} }
 function chatFmtTime(iso) { const d = new Date(iso); return isNaN(d) ? "" : String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0"); }
@@ -5905,7 +5906,7 @@ async function chatSend() {
   const { data, error } = await sb.from("messages").insert(row).select().single();
   if (error) { ta.value = text; toast("Kunde inte skicka: " + error.message); return; }
   if (data && !chat.msgs.some(m => m.id === data.id)) chat.msgs.push(data);
-  renderChat(); chatMarkRead(chat.chan);
+  chatMarkRead(chat.chan); renderChat();
 }
 async function chatDelete(id) {
   const { error } = await sb.from("messages").delete().eq("id", id);
@@ -5919,8 +5920,9 @@ function onChatInsert(m) {
   chat.msgs.push(m);
   const chan = chatChanOf(m), mine = m.author === chatMe();
   const visible = chat.open && chat.chan === chan && !document.hidden;
+  if (visible) chatMarkRead(chan);
   if (chat.open) renderChat();
-  if (visible) { chatMarkRead(chan); return; }
+  if (visible) return;
   updateChatBadge();
   if (mine) return;
   if (chan === "all" && !chat.notifyAll) return;
