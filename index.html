@@ -693,7 +693,8 @@ const SUPA = {
     <button onclick="splitAtPlayhead()">Dela cue vid spelhuvudet</button>
     <button onclick="mergeSelected()" title="Shift-klicka på cuer i vågformen (eller 'markera' i listan) och slå ihop dem">Slå ihop markerade</button>
     <button id="det-undo" onclick="detUndoStep()" disabled title="Ångra senaste dela/slå ihop/omdetektering (Cmd+Z)">Ångra</button>
-    <button onclick="detIdentify()">Identifiera innehåll (SongSpot)</button>
+    <button onclick="detIdentify()" title="Söker alla cuer mot ditt lokala SongSpot-arkiv (gratis)">Identifiera innehåll (SongSpot)</button>
+    <button onclick="detAuddMarked()" title="Extern sökning via AudD för markerade cuer (shift-klicka i vågformen eller 'markera' i listan). 1 sökning per cue.">Identifiera innehåll (AudD)</button>
     <span style="flex:1"></span>
     <button onclick="zoomWave(0.5)">Zooma in +</button>
     <button onclick="zoomWave(2)">Zooma ut −</button>
@@ -759,7 +760,8 @@ const SUPA = {
   </div>
   <div style="margin: 8px 0 4px; display:flex; gap:8px; align-items:center">
     <button class="primary admin-only" onclick="addCue()">+ Lägg till cue</button>
-    <button id="tl-btn" onclick="toggleTimeline()" disabled title="Importera en AAF så byggs tidslinjen av musikspåren">Tidslinje</button>
+    <button class="admin-only" onclick="toggleDetect()">Auto-detektera cuer…</button>
+    <button id="tl-btn" onclick="toggleTimeline()" disabled title="Importera en AAF så byggs tidslinjen av musikspåren">Tidslinje AAF</button>
   </div>
   <div id="rec-area" style="display:none"></div>
   <div class="table-wrap" id="main-wrap">
@@ -772,7 +774,6 @@ const SUPA = {
 </div>
 
 <div class="panel toolbar">
-  <button class="admin-only" onclick="toggleDetect()">Auto-detektera cuer…</button>
   <button class="admin-only" onclick="toggleArchive()">SongSpot</button>
   <button class="admin-only" onclick="document.getElementById('edl-in').click()">Importera EDL/XML/AAF…</button>
   <input type="file" id="edl-in" accept=".edl,.xml,.txt,.aaf" style="display:none" onchange="importEdlXml(event)">
@@ -3413,6 +3414,17 @@ async function archiveAudd() {
     document.getElementById("arch-id-in").value = ""; // töm filväljaren så man inte söker igen av misstag
   } catch (e) { if (e.cancelled) { archStatus(""); return; } archStatus("AudD: " + (e.message || e)); toast(String(e.message || e)); }
 }
+// Auto-detektering: AudD för alla markerade cuer (r.mark), en i taget med bekräftelse
+async function detAuddMarked() {
+  const idx = detected.map((r, i) => r.mark ? i : -1).filter(i => i >= 0);
+  if (!idx.length) { toast("Markera först en cue: shift-klicka i vågformen eller 'markera' i listan"); return; }
+  for (const i of idx) {
+    const ok = await detAudd(i);
+    if (ok === false) break; // avbrutet
+    // vänta tills resultatrutan stängts innan nästa cue
+    while (document.getElementById("audd-overlay").classList.contains("open")) await new Promise(r => setTimeout(r, 200));
+  }
+}
 // Auto-detektering: 12 s ur region i
 let detMonoCache = null;
 async function detAudd(i) {
@@ -3427,7 +3439,8 @@ async function detAudd(i) {
     showAudd(res, hit, hit ? (h => { r.audd = h; renderDetected(); }) : null, `cue ${i + 1} · ${secToTC(r.start)}`);
     document.getElementById("audd-use").textContent = "Använd som namn på cuen";
     detStatus(hit ? `AudD: ${hit.artist} – ${hit.title}` : "AudD: ingen träff");
-  } catch (e) { if (e.cancelled) { detStatus(""); return; } detStatus("AudD: " + (e.message || e)); toast(String(e.message || e)); }
+    return true;
+  } catch (e) { if (e.cancelled) { detStatus(""); return false; } detStatus("AudD: " + (e.message || e)); toast(String(e.message || e)); return true; }
 }
 
 // ---------- Avstämning vid import ----------
