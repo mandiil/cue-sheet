@@ -112,6 +112,7 @@ const SUPA = {
 
   #detect-panel { display: none; }
   #detect-panel.open { display: block; }
+  #detect-panel.pinned #det-top { position: sticky; top: 0; z-index: 40; background: var(--panel); padding-bottom: 8px; box-shadow: 0 10px 24px rgba(0,0,0,.45); margin: 0 -18px; padding-left: 18px; padding-right: 18px; }
   #tl-btn:disabled { opacity: 0.35; cursor: not-allowed; }
   .dropzone { border-radius: 8px; transition: box-shadow .15s, background .15s; }
   .dropzone.drop-hover { box-shadow: 0 0 0 2px var(--accent); background: rgba(212,168,67,.08); }
@@ -740,6 +741,7 @@ const SUPA = {
 </div>
 
 <div class="panel" id="detect-panel">
+  <div id="det-top">
   <label style="margin-bottom:10px">Auto-detektera cuer i ljudfil</label>
   <div class="det-grid">
     <div><label>Ljudfil (WAV säkrast) – eller dra hit</label><input type="file" id="audio-in" accept="audio/*,.wav,.aif,.aiff,.mp3,.flac" onchange="bwfPrefill(this.files[0])"></div>
@@ -763,10 +765,11 @@ const SUPA = {
     <button onclick="detIdentify()" title="Söker alla cuer mot ditt lokala SongSpot-arkiv (gratis)">Identifiera innehåll (SongSpot)</button>
     <button onclick="detAuddMarked()" title="Extern sökning via AudD för markerade cuer (shift-klicka i vågformen eller 'markera' i listan). 1 sökning per cue.">Identifiera innehåll (AudD)</button>
     <span style="flex:1"></span>
-    <span style="display:inline-flex;align-items:center;gap:5px;white-space:nowrap" title="Listan scrollar själv till cuen du pekar på i vågformen"><input type="checkbox" id="det-follow" style="width:14px;height:14px;margin:0;flex:none" onchange="detSetFollow(this.checked)"><label for="det-follow" style="display:inline;margin:0;font-size:12px;text-transform:none;letter-spacing:0;color:var(--muted);cursor:pointer;white-space:nowrap">Följ i listan</label></span>
+    <span style="display:inline-flex;align-items:center;gap:5px;white-space:nowrap" title="Vågformen ligger kvar högst upp medan listan scrollar in under den, och listan scrollar själv till cuen du pekar på"><input type="checkbox" id="det-follow" style="width:14px;height:14px;margin:0;flex:none" onchange="detSetFollow(this.checked)"><label for="det-follow" style="display:inline;margin:0;font-size:12px;text-transform:none;letter-spacing:0;color:var(--muted);cursor:pointer;white-space:nowrap">Fäst &amp; följ i listan</label></span>
     <button onclick="zoomWave(0.5)">Zooma in +</button>
     <button onclick="zoomWave(2)">Zooma ut −</button>
     <button onclick="zoomAll()">Hela filen</button>
+  </div>
   </div>
   <div id="det-results"></div>
 </div>
@@ -2423,14 +2426,17 @@ function regionAtX(e) {
   return detected.findIndex(r => t >= r.start && t <= r.end);
 }
 let detFollow = false; try { detFollow = !!localStorage.getItem("det-follow"); } catch (e) {}
-function detSetFollow(on) { detFollow = on; try { localStorage.setItem("det-follow", on ? "1" : ""); } catch (e) {} }
+function detSetFollow(on) { detFollow = on; document.getElementById("detect-panel").classList.toggle("pinned", on); try { localStorage.setItem("det-follow", on ? "1" : ""); } catch (e) {} }
 function setDetHover(i, fromList) {
   if (i === detHover) return;
   detHover = i;
   document.querySelectorAll("#det-results tr[data-i]").forEach(tr => {
     const on = parseInt(tr.dataset.i, 10) === i;
     tr.classList.toggle("hover", on);
-    if (on && !fromList && detFollow) tr.scrollIntoView({ block: "nearest" });
+    if (on && !fromList && detFollow) { // fäst läge: vågformen ligger still, listan scrollar in under den
+      const top = document.getElementById("det-top").getBoundingClientRect().bottom, r = tr.getBoundingClientRect();
+      if (r.top < top + 4 || r.bottom > window.innerHeight - 8) window.scrollBy({ top: r.top - top - 60, behavior: "smooth" });
+    }
   });
   redrawWave();
 }
@@ -5625,7 +5631,7 @@ async function setLevel(uid, level) {
 load();
 render();
 initWaveEvents();
-try { document.getElementById("det-follow").checked = detFollow; } catch (e) {}
+try { document.getElementById("det-follow").checked = detFollow; document.getElementById("detect-panel").classList.toggle("pinned", detFollow); } catch (e) {}
 cloudInit();
 </script>
 </body>
