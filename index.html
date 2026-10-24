@@ -2298,6 +2298,7 @@ function initWaveEvents() {
   cv.addEventListener("pointerdown", e => {
     if (!audioEnv || !detAudio) return;
     if (e.shiftKey) { const i = regionAtX(e); if (i >= 0) toggleMark(i); return; } // shift-klick = markera för ihopslagning
+    clearMarks(); // vanligt klick utan shift avmarkerar
     scrubbing = true;
     cv.setPointerCapture(e.pointerId);
     waveSeek(e);
@@ -2369,6 +2370,11 @@ function toggleMark(i) {
   detected[i].mark = !detected[i].mark;
   renderDetected(); redrawWave();
 }
+function clearMarks() {
+  if (!detected.some(r => r.mark)) return;
+  detected.forEach(r => { r.mark = false; });
+  renderDetected(); redrawWave();
+}
 function mergeSelected() {
   const idx = detected.map((r, i) => r.mark ? i : -1).filter(i => i >= 0);
   if (idx.length < 2) { toast("Shift-klicka på minst två cuer i vågformen (eller använd ⤒ på en rad) för att slå ihop"); return; }
@@ -2413,7 +2419,8 @@ function renderDetected() {
     <thead><tr><th title="Ta med som cue">Ta med</th><th></th><th>#</th><th>TC In</th><th>TC Ut</th><th>Längd</th><th>Innehåll</th><th></th></tr></thead>
     <tbody>` +
     detected.map((r, i) => `<tr data-i="${i}" class="${i === detHover ? "hover" : ""}${r.sel ? "" : " unsel"}${r.mark ? " marked" : ""}"
-        onmouseenter="setDetHover(${i},true)" onmouseleave="setDetHover(-1,true)">
+        onmouseenter="setDetHover(${i},true)" onmouseleave="setDetHover(-1,true)"
+        onclick="if(!event.shiftKey&&!event.target.closest('button,input,select,a'))clearMarks()">
       <td><input type="checkbox" ${r.sel ? "checked" : ""} onchange="detected[${i}].sel=this.checked;this.closest('tr').classList.toggle('unsel',!this.checked);redrawWave()"></td>
       <td><button class="icon" title="Spela/pausa från cue-start" onclick="playRegion(${i})">▶</button></td>
       <td>${i + 1}${r.mark ? ` <span class="role-pill commenter" style="font-size:9px;padding:0 5px">vald</span>` : ""}</td>
