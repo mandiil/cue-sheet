@@ -5028,7 +5028,7 @@ async function openProjects() {
   document.getElementById("proj-overlay").classList.add("open");
   const el = document.getElementById("proj-list");
   el.innerHTML = `<div class="cm-empty">Hämtar…</div>`;
-  const { data, error } = await sb.from("projects").select("id,name,template,owner,updated_at,members(role,user_id,profiles(username))").order("updated_at", { ascending: false });
+  const { data, error } = await sb.from("projects").select("id,name,template,owner,updated_at,active,members(role,user_id,profiles(username))").order("updated_at", { ascending: false });
   if (error) { el.innerHTML = `<div class="cm-empty">Kunde inte hämta: ${esc(error.message)}</div>`; return; }
   document.getElementById("proj-sub").textContent = cloud.level === "superadmin" ? `alla produktioner (${data.length})` : "";
   if (!data.length) { el.innerHTML = `<div class="cm-empty">${cloud.canCreate ? "Inga produktioner ännu. Skapa en med knappen nedan." : "Du är inte inbjuden till någon produktion ännu."}</div>`; return; }
@@ -5036,11 +5036,13 @@ async function openProjects() {
     const r = projectRole(p);
     const ownerM = (p.members || []).find(m => m.user_id === p.owner);
     const ownerName = p.owner === cloud.user.id ? "du" : (ownerM && ownerM.profiles && ownerM.profiles.username) || "";
-    return `<div class="proj-row">
-      <div style="flex:1"><b>${esc(p.name)}</b><div class="muted">${esc((TEMPLATES[p.template] || {}).name || p.template)}${ownerName ? " · ägare: " + esc(ownerName) : ""} · ändrad ${fmtTs(p.updated_at)}</div></div>
+    const inactive = p.active === false, mayToggle = p.owner === cloud.user.id || cloud.level === "superadmin";
+    return `<div class="proj-row" style="${inactive ? "opacity:.6" : ""}">
+      <div style="flex:1"><b>${esc(p.name)}</b>${inactive ? ` <span class="role-pill" style="background:#555;color:#eee" title="Inaktiv: skrivskyddad, delat SongSpot-arkiv och vågformer rensade">Inaktiv</span>` : ""}<div class="muted">${esc((TEMPLATES[p.template] || {}).name || p.template)}${ownerName ? " · ägare: " + esc(ownerName) : ""} · ändrad ${fmtTs(p.updated_at)}</div></div>
       <span class="role-pill ${r}">${ROLE_LABEL[r]}</span>
+      ${mayToggle ? `<button class="icon" title="${inactive ? "Aktivera produktionen igen (redigering öppnas; delade arkiv får delas om)" : "Inaktivera: skrivskydda och rensa molndata som tar plats (delat SongSpot-arkiv, vågformer, äldre versioner). Cuer, kommentarer och de 5 senaste versionerna behålls."}" onclick="setProjectActive('${p.id}','${esc(p.name)}',${inactive ? "true" : "false"})">${inactive ? "● Aktivera" : "○ Inaktivera"}</button>` : ""}
       <button class="primary" onclick="closeProjects();openProject('${p.id}')">Öppna</button>
-      ${p.owner === cloud.user.id || cloud.level === "superadmin" ? `<button class="icon del" title="Ta bort produktion" onclick="deleteProject('${p.id}','${esc(p.name)}')">✕</button>` : ""}
+      ${mayToggle ? `<button class="icon del" title="Ta bort produktion" onclick="deleteProject('${p.id}','${esc(p.name)}')">✕</button>` : ""}
     </div>`;
   }).join("");
 }
@@ -5064,6 +5066,21 @@ async function cloudCreateProject(tplKey) {
   closeTemplatePicker();
   await openProject(data.id);
 }
+// Inaktivera = skrivskydd + rensning av molndata som tar plats. Fingerprint-filer i Storage tas bort från klienten (SQL kan inte).
+async function setProjectActive(id, name, on) {
+  if (!on && !confirm(`Inaktivera "${name}"?\n\nProduktionen blir skrivskyddad för alla, och för att spara plats i molnet rensas:\n• produktionens delade SongSpot-arkiv (fingerprints)\n• tidslinjens vågformer (kan byggas om från AAF)\n• alla utom de 5 senaste versionerna\n\nCuer, kommentarer och teknikerns fält behålls. Du kan aktivera igen när som helst (delade mappar får då delas om).`)) return;
+  try {
+    if (!on) {
+      const { data: files } = await sb.storage.from("fingerprints").list(id, { limit: 1000 });
+      const paths = (files || []).map(f => `${id}/${f.name}`);
+      for (let i = 0; i < paths.length; i += 100) await sb.storage.from("fingerprints").remove(paths.slice(i, i + 100));
+    }
+    const { error } = await sb.rpc("set_project_active", { p_project: id, p_active: on });
+    if (error) throw error;
+    toast(on ? `"${name}" är aktiv igen` : `"${name}" inaktiverad – molndata rensad`);
+    if (cloud.project && cloud.project.id === id) { closeProjects(); await openProject(id); } else openProjects();
+  } catch (e) { toast("Kunde inte ändra: " + (e.message || e)); }
+}
 async function deleteProject(id, name) {
   if (!confirm(`Ta bort produktionen "${name}" permanent (inkl. kommentarer)?`)) return;
   const { error } = await sb.from("projects").delete().eq("id", id);
@@ -5073,13 +5090,13 @@ async function deleteProject(id, name) {
 }
 
 async function openProject(id) {
-  const { data: p, error } = await sb.from("projects").select("id,name,template,owner,state,updated_at,members(role,user_id,profiles(username))").eq("id", id).maybeSingle();
+  const { data: p, error } = await sb.from("projects").select("id,name,template,owner,state,updated_at,active,members(role,user_id,profiles(username))").eq("id", id).maybeSingle();
   if (error || !p) { toast("Produktionen hittades inte"); setUrl({}); localStorage.removeItem("cuesheet-last-project"); return false; }
   leaveProject();
   if (!cloud.localBackup) { try { cloud.localBackup = localStorage.getItem(KEY); } catch (e) {} }
   cloud.project = p;
   cloud.members = p.members || [];
-  role = projectRole(p);
+  role = p.active === false ? "commenter" : projectRole(p); // inaktiv produktion = skrivskyddad för alla
   localStorage.setItem("cuesheet-last-project", p.id);
   setUrl({ p: p.id });
   // ladda arket
@@ -5091,9 +5108,10 @@ async function openProject(id) {
   render();
   applyRole();
   subscribeProject(p.id);
-  document.getElementById("cloud-proj").innerHTML = `· <b>${esc(p.name)}</b> <span class="role-pill ${role}">${ROLE_LABEL[role]}</span>`;
+  document.getElementById("cloud-proj").innerHTML = `· <b>${esc(p.name)}</b> <span class="role-pill ${role}">${ROLE_LABEL[role]}</span>` +
+    (p.active === false ? ` <span class="role-pill" style="background:#555;color:#eee" title="Skrivskyddad. Ägaren eller Admin kan aktivera igen under Produktioner…">INAKTIV</span>` : "");
   updateInviteBtn();
-  cstatus("synkad");
+  cstatus(p.active === false ? "inaktiv – skrivskyddad" : "synkad");
   return true;
 }
 function updateInviteBtn() {
