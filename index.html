@@ -2756,24 +2756,42 @@ async function detIdentify(auto) {
   finally { detIdentifying = false; fpStatusSink = null; }
 }
 
+let detAdding = false;
 async function addDetected(mode) {
+  if (detAdding) { toast("Vänta – cuer skapas när analysen är klar. Tryck inte igen."); return; }
   const sel = detected.filter(r => r.sel);
   if (!sel.length) { toast("Inga cuer valda"); return; }
+  detAdding = true;
+  const btns = [...document.querySelectorAll("#det-results button.primary")];
+  btns.forEach(b => { b.disabled = true; b.dataset.label = b.textContent; });
+  const busyBtn = btns.find(b => (b.dataset.label || "").startsWith(mode === "merge" ? "Merge" : "Lägg"));
+  if (busyBtn) busyBtn.textContent = "Vänta – analyserar ljudet, cuer skapas strax…";
+  try { await addDetectedInner(mode); }
+  finally {
+    detAdding = false;
+    btns.forEach(b => { b.disabled = false; if (b.dataset.label) b.textContent = b.dataset.label; });
+  }
+}
+async function addDetectedInner(mode) {
+  const sel = detected.filter(r => r.sel);
   // ljudfingerprint per region (första 20 s) för innehållsbaserad avstämning
   let mono = null;
   try {
-    if (!detMonoCache || detMonoCache.file !== detFile) { toast("Läser ljud för fingerprint…"); const m = await fpGetMono(detFile, "Mixdown"); detMonoCache = { file: detFile, samples: m.samples, sr: m.sr }; }
+    if (!detMonoCache || detMonoCache.file !== detFile) { detStatus("Läser ljudet för fingerprint … (cuer skapas när det är klart)"); const m = await fpGetMono(detFile, "Mixdown"); detMonoCache = { file: detFile, samples: m.samples, sr: m.sr }; }
     mono = detMonoCache;
   } catch (e) { console.warn("mono", e); }
   const clips = [];
+  let k = 0;
   for (const r of sel) {
+    k++; detStatus(`Fingerprintar cue ${k}/${sel.length} … (cuer skapas när det är klart)`);
     const m = r.matches && r.matchSel >= 0 ? r.matches[r.matchSel] : null;
     const name = m ? m.name : r.audd ? `${r.audd.artist} – ${r.audd.title}` : "";
     const clip = { name, nameSrc: name ? "suggest" : "", namePct: m ? m.score : (r.audd ? 100 : 0), tcIn: secToTC(r.start), tcOut: secToTC(r.end), note: `auto-detekterad · längd ${fmtSec(r.end - r.start)}` + (m ? ` · SongSpot ${m.score} %` : "") + (r.audd ? ` · AudD${r.audd.album ? " · " + r.audd.album : ""}${r.audd.spotify ? " · " + r.audd.spotify : ""}` : "") };
     if (mono) { try { const a = Math.floor(r.start * mono.sr), b = Math.min(mono.samples.length, Math.floor(r.end * mono.sr)); const fp = await cueFpFromSamples(mono.samples.subarray(a, b), mono.sr); clip.fp = fp.flat; clip.fpDur = fp.dur; } catch (e) {} }
     clips.push(clip);
   }
-  reconcileImport(clips, "auto-detektering", { force: mode === "merge" ? "" : "add" });
+  detStatus("");
+  await reconcileImport(clips, "auto-detektering", { force: mode === "merge" ? "" : "add" });
   // fäll ihop panelen och visa tabellen
   if (detAudio) detAudio.pause();
   document.getElementById("detect-panel").classList.remove("open"); syncPanelBtns();
