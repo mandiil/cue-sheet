@@ -118,6 +118,38 @@ const SUPA = {
   .dropzone.drop-hover { box-shadow: 0 0 0 2px var(--accent); background: rgba(212,168,67,.08); }
   .dropzone input[type="file"] { cursor: copy; }
   button.panel-open, button.panel-open:hover { background: #2f6b45; border-color: #3f8a5a; color: #e4f5ea; }
+
+  /* Chatt (per produktion) */
+  #chat-panel { padding: 10px 12px; }
+  .chat-wrap { display: flex; gap: 12px; height: 260px; }
+  .chat-chans { width: 180px; flex: none; border-right: 1px solid var(--border); padding-right: 10px; overflow-y: auto; display: flex; flex-direction: column; gap: 3px; }
+  .chat-chans .chat-h { font-size: 11px; text-transform: uppercase; letter-spacing: .8px; color: var(--muted); margin: 6px 0 2px 8px; }
+  .chat-chans button { text-align: left; display: flex; align-items: center; gap: 6px; padding: 5px 8px; background: transparent; border-color: transparent; width: 100%; }
+  .chat-chans button:hover { background: var(--panel2); }
+  .chat-chans button.on { background: var(--panel2); border-color: var(--border); color: var(--accent); font-weight: 600; }
+  .chat-chans button .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .chat-n { background: #e05252; color: #fff; border-radius: 10px; font-size: 10px; line-height: 16px; padding: 0 6px; min-width: 16px; text-align: center; margin-left: auto; font-weight: 700; }
+  #btn-chat .chat-n { display: none; margin-left: 6px; }
+  #btn-chat .chat-n.show { display: inline-block; }
+  .chat-main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  .chat-head { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+  .chat-head label { display: flex; align-items: center; gap: 5px; margin: 0; text-transform: none; letter-spacing: 0; font-size: 12px; cursor: pointer; }
+  .chat-head label input { width: 14px; height: 14px; margin: 0; }
+  .chat-msgs { flex: 1; overflow-y: auto; background: var(--panel2); border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; font-size: 13.5px; }
+  .chat-empty { color: var(--muted); font-size: 13px; text-align: center; padding: 24px 0; }
+  .chat-day { color: var(--muted); font-size: 11px; text-align: center; margin: 6px 0 2px; text-transform: uppercase; letter-spacing: .6px; }
+  .chat-m { display: flex; gap: 8px; padding: 2px 0; align-items: baseline; }
+  .chat-m .who { font-weight: 600; color: var(--muted); white-space: nowrap; }
+  .chat-m.me .who { color: var(--accent); }
+  .chat-m .ts { color: var(--muted); font-size: 11px; white-space: nowrap; }
+  .chat-m .txt { white-space: pre-wrap; word-break: break-word; flex: 1; }
+  .chat-m a.cue { color: var(--accent); cursor: pointer; font-weight: 600; text-decoration: none; }
+  .chat-m a.cue:hover { text-decoration: underline; }
+  .chat-m button.icon { opacity: 0; padding: 0 6px; }
+  .chat-m:hover button.icon { opacity: 1; }
+  .chat-input { display: flex; gap: 8px; margin-top: 6px; align-items: flex-end; }
+  .chat-input textarea { resize: none; min-height: 36px; max-height: 96px; font-family: inherit; }
+  .chat-input textarea:focus { outline: none; border-color: var(--accent-dim); }
   button.undo { background: #6e4a2a; border-color: #8a5d35; color: #f0d9c0; }
   button.undo:hover:not(:disabled) { background: #85593a; }
   button.undo:disabled { opacity: 0.4; cursor: not-allowed; }
@@ -440,10 +472,32 @@ const SUPA = {
   <button id="btn-projects" style="display:none" onclick="openProjects()">Produktioner…</button>
   <button id="btn-invite" style="display:none" onclick="openInvite()">Användare…</button>
   <button id="btn-accounts" style="display:none" onclick="openAccounts()">Konton…</button>
+  <button id="btn-chat" style="display:none" onclick="toggleChat()" title="Chatt med produktionens team – gruppchatt och privata meddelanden">Chatt<span class="chat-n" id="chat-badge"></span></button>
   <span id="cloud-proj" class="totals" style="text-align:left"></span>
   <div class="spacer"></div>
   <span id="cloud-status" class="totals"></span>
   <button id="btn-logout" style="display:none" onclick="cloudLogout()">Logga ut</button>
+</div>
+
+<!-- Chatt (per produktion): gruppchatt "Alla" + privata meddelanden -->
+<div class="panel" id="chat-panel" style="display:none">
+  <div class="chat-wrap">
+    <div class="chat-chans" id="chat-chans"></div>
+    <div class="chat-main">
+      <div class="chat-head">
+        <b id="chat-title">Alla</b><span class="totals" id="chat-sub" style="text-align:left"></span>
+        <div class="spacer"></div>
+        <label title="Pling när ett meddelande kommer in"><input type="checkbox" id="chat-sound" checked onchange="chatSetSound(this.checked)">ljud</label>
+        <label title="Visa en toast när ett meddelande kommer in i gruppchatten (privata pingar alltid)"><input type="checkbox" id="chat-notify-all" checked onchange="chatSetNotifyAll(this.checked)">pinga gruppchatt</label>
+        <button onclick="toggleChat(false)">Göm</button>
+      </div>
+      <div class="chat-msgs" id="chat-msgs"></div>
+      <div class="chat-input">
+        <textarea id="chat-text" rows="1" placeholder="Skriv ett meddelande… #12 blir en länk till cue 12 · Enter skickar, Shift+Enter ny rad" onkeydown="chatKey(event)" oninput="this.style.height='auto';this.style.height=Math.min(96,this.scrollHeight)+'px'"></textarea>
+        <button class="primary" onclick="chatSend()">Skicka</button>
+      </div>
+    </div>
+  </div>
 </div>
 
 <!-- Visningsnamn -->
@@ -5585,10 +5639,13 @@ async function openProject(id) {
   st.recActive = false;
   applyState(JSON.parse(JSON.stringify(st)));
   cloud.lastSent = JSON.stringify(stripForCloud(state));
-  await Promise.all([reloadComments(), reloadTech()]);
+  await Promise.all([reloadComments(), reloadTech(), reloadChat()]);
   render();
   applyRole();
   subscribeProject(p.id);
+  document.getElementById("btn-chat").style.display = "";
+  chat.chan = "all"; let chatWasOpen = false; try { chatWasOpen = localStorage.getItem("chat-open") === "1"; } catch (e) {}
+  if (chatWasOpen) toggleChat(true); else { chat.open = false; document.getElementById("chat-panel").style.display = "none"; updateChatBadge(); }
   document.getElementById("cloud-proj").innerHTML = `· <b>${esc(p.name)}</b> <span class="role-pill ${role}">${ROLE_LABEL[role]}</span>` +
     (p.active === false ? ` <span class="role-pill" style="background:#e06b6b;color:#1a0b0b" title="Skrivskyddad. Ägaren eller Admin kan aktivera igen under Produktioner…">INAKTIV</span>` : "");
   updateInviteBtn();
@@ -5606,6 +5663,8 @@ function leaveProject() {
   if (cloud.chan) { try { sb.removeChannel(cloud.chan); } catch (e) {} cloud.chan = null; }
   if (cloud.saveTimer) { clearTimeout(cloud.saveTimer); cloud.saveTimer = null; }
   cloud.project = null; cloud.members = []; techVals = {};
+  chat.msgs = []; chat.open = false; const cp = document.getElementById("chat-panel"); if (cp) cp.style.display = "none";
+  const cb = document.getElementById("btn-chat"); if (cb) { cb.style.display = "none"; cb.classList.remove("panel-open"); }
   role = "local";
   applyRole();
   document.getElementById("cloud-proj").textContent = "";
@@ -5725,6 +5784,171 @@ async function cloudResetComments(cueId, col) {
   await reloadComments(); render();
 }
 
+// ---- Chatt (per produktion) ----
+// Tabell messages: to_user = null → gruppchatten "Alla", annars privat mellan author och to_user (RLS döljer andras privata).
+// Oläst räknas lokalt: senast lästa tidpunkt per kanal i localStorage ("chat-read-<projekt>").
+const chat = { open: false, chan: "all", msgs: [], read: {}, sound: true, notifyAll: true, ctx: null };
+function chatMe() { return cloud.user ? cloud.user.id : ""; }
+function chatChanOf(m) { return m.to_user ? (m.author === chatMe() ? m.to_user : m.author) : "all"; }
+function chatReadKey() { return "chat-read-" + (cloud.project ? cloud.project.id : ""); }
+function chatLoadRead() { try { chat.read = JSON.parse(localStorage.getItem(chatReadKey()) || "{}"); } catch (e) { chat.read = {}; } }
+function chatMarkRead(chan) {
+  const last = chat.msgs.filter(m => chatChanOf(m) === chan).pop();
+  chat.read[chan] = last ? last.created_at : new Date().toISOString();
+  try { localStorage.setItem(chatReadKey(), JSON.stringify(chat.read)); } catch (e) {}
+  updateChatBadge();
+}
+function chatUnread(chan) {
+  const since = chat.read[chan] || "";
+  return chat.msgs.filter(m => chatChanOf(m) === chan && m.author !== chatMe() && m.created_at > since).length;
+}
+function chatMemberName(uid) {
+  if (uid === chatMe()) return cloud.profile && cloud.profile.username || "jag";
+  const m = (cloud.members || []).find(x => x.user_id === uid);
+  if (m && m.profiles && m.profiles.username) return m.profiles.username;
+  const msg = chat.msgs.find(x => x.author === uid && x.author_name);
+  return msg ? msg.author_name : "Okänd";
+}
+function chatChannels() {
+  // Alla + varje annan medlem (ägaren ingår om hen skrivit något eller finns i members)
+  const ids = new Set((cloud.members || []).map(m => m.user_id));
+  chat.msgs.forEach(m => { ids.add(m.author); if (m.to_user) ids.add(m.to_user); });
+  ids.delete(chatMe());
+  const list = [...ids].map(id => ({ id, name: chatMemberName(id) })).sort((a, b) => a.name.localeCompare(b.name, "sv"));
+  return [{ id: "all", name: "Alla" }].concat(list);
+}
+async function reloadChat() {
+  if (!cloudActive()) { chat.msgs = []; return; }
+  const { data, error } = await sb.from("messages").select("*").eq("project_id", cloud.project.id).order("created_at").limit(1000);
+  if (error) return;
+  chat.msgs = data || [];
+  chatLoadRead();
+  updateChatBadge(); if (chat.open) renderChat();
+}
+function updateChatBadge() {
+  const b = document.getElementById("chat-badge"); if (!b) return;
+  const n = chatChannels().reduce((t, c) => t + chatUnread(c.id), 0);
+  b.textContent = n ? String(n) : ""; b.classList.toggle("show", n > 0);
+  const btn = document.getElementById("btn-chat"); if (btn) btn.classList.toggle("panel-open", chat.open);
+}
+function toggleChat(on) {
+  if (!cloudActive()) { toast("Chatten finns i molnprojekt"); return; }
+  chat.open = on === undefined ? !chat.open : !!on;
+  document.getElementById("chat-panel").style.display = chat.open ? "" : "none";
+  try { localStorage.setItem("chat-open", chat.open ? "1" : "0"); } catch (e) {}
+  if (chat.open) { renderChat(); chatMarkRead(chat.chan); setTimeout(() => document.getElementById("chat-text").focus(), 30); }
+  updateChatBadge();
+}
+function chatSelect(chan) { chat.chan = chan; renderChat(); chatMarkRead(chan); document.getElementById("chat-text").focus(); }
+function chatSetSound(v) { chat.sound = v; try { localStorage.setItem("chat-sound", v ? "1" : "0"); } catch (e) {} }
+function chatSetNotifyAll(v) { chat.notifyAll = v; try { localStorage.setItem("chat-notify-all", v ? "1" : "0"); } catch (e) {} }
+function chatFmtTime(iso) { const d = new Date(iso); return isNaN(d) ? "" : String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0"); }
+function chatFmtDay(iso) {
+  const d = new Date(iso), t = new Date(); if (isNaN(d)) return "";
+  const same = (a, b) => a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+  if (same(d, t)) return "Idag";
+  const y = new Date(t); y.setDate(t.getDate() - 1); if (same(d, y)) return "Igår";
+  return d.toLocaleDateString("sv-SE", { weekday: "short", day: "numeric", month: "short" });
+}
+// #12, #7a → klickbar länk till cuen i listan; webbadresser blir länkar
+function chatLinkify(text) {
+  return esc(text)
+    .replace(/(https?:\/\/[^\s<]+)/g, '<a href="$1" target="_blank" rel="noopener" style="color:var(--accent)">$1</a>')
+    .replace(/(^|[^\w&])#(\d+[a-z]?)\b/gi, (m, pre, no) => `${pre}<a class="cue" title="Gå till cue ${no}" onclick="chatGoCue('${no}')">#${no}</a>`);
+}
+function chatGoCue(no) {
+  const i = state.cues.findIndex(c => c.f && String(c.f.no).toLowerCase() === String(no).toLowerCase());
+  if (i < 0) { toast(`Cue ${no} finns inte i listan`); return; }
+  if (state.recActive) { state.recActive = false; render(); }
+  const tr = cueRows()[i]; if (!tr) return;
+  tr.scrollIntoView({ behavior: "smooth", block: "center" });
+  tr.classList.add("tl-flash"); setTimeout(() => tr.classList.remove("tl-flash"), 1600);
+}
+function renderChat() {
+  if (!cloudActive()) return;
+  const chans = chatChannels();
+  if (!chans.some(c => c.id === chat.chan)) chat.chan = "all";
+  document.getElementById("chat-chans").innerHTML = chans.map((c, i) => {
+    const n = chatUnread(c.id);
+    return (i === 1 ? `<div class="chat-h">Privat</div>` : "") +
+      `<button class="${c.id === chat.chan ? "on" : ""}" onclick="chatSelect('${c.id}')" title="${c.id === "all" ? "Gruppchatt – alla i produktionen" : "Privat meddelande till " + esc(c.name)}">
+         <span class="nm">${c.id === "all" ? "# " : "@ "}${esc(c.name)}</span>${n ? `<span class="chat-n">${n}</span>` : ""}</button>`;
+  }).join("");
+  const cur = chans.find(c => c.id === chat.chan) || chans[0];
+  document.getElementById("chat-title").textContent = cur.id === "all" ? "Alla" : cur.name;
+  document.getElementById("chat-sub").textContent = cur.id === "all" ? `gruppchatt · ${(cloud.members || []).length} i teamet` : "privat – bara ni två ser det här";
+  const el = document.getElementById("chat-msgs");
+  const msgs = chat.msgs.filter(m => chatChanOf(m) === chat.chan);
+  if (!msgs.length) { el.innerHTML = `<div class="chat-empty">${cur.id === "all" ? "Inga meddelanden ännu. Skriv något till teamet!" : "Inga meddelanden ännu. Bara du och " + esc(cur.name) + " ser den här tråden."}</div>`; return; }
+  let day = "", html = "";
+  msgs.forEach(m => {
+    const d = chatFmtDay(m.created_at); if (d !== day) { day = d; html += `<div class="chat-day">${esc(d)}</div>`; }
+    const me = m.author === chatMe();
+    html += `<div class="chat-m${me ? " me" : ""}"><span class="who">${esc(me ? (cloud.profile.username || "jag") : (m.author_name || chatMemberName(m.author)))}</span>
+      <span class="txt">${chatLinkify(m.text)}</span><span class="ts">${chatFmtTime(m.created_at)}</span>
+      ${me || isAdmin() ? `<button class="icon del" title="Ta bort" onclick="chatDelete('${m.id}')">✕</button>` : ""}</div>`;
+  });
+  el.innerHTML = html;
+  el.scrollTop = el.scrollHeight;
+  document.getElementById("chat-sound").checked = chat.sound;
+  document.getElementById("chat-notify-all").checked = chat.notifyAll;
+}
+function chatKey(ev) {
+  if (ev.key === "Enter" && !ev.shiftKey) { ev.preventDefault(); chatSend(); }
+}
+async function chatSend() {
+  if (!cloudActive()) return;
+  const ta = document.getElementById("chat-text"), text = ta.value.trim();
+  if (!text) return;
+  const row = { project_id: cloud.project.id, author: chatMe(), author_name: cloud.profile.username || "", to_user: chat.chan === "all" ? null : chat.chan, text };
+  ta.value = ""; ta.style.height = "auto";
+  const { data, error } = await sb.from("messages").insert(row).select().single();
+  if (error) { ta.value = text; toast("Kunde inte skicka: " + error.message); return; }
+  if (data && !chat.msgs.some(m => m.id === data.id)) chat.msgs.push(data);
+  renderChat(); chatMarkRead(chat.chan);
+}
+async function chatDelete(id) {
+  const { error } = await sb.from("messages").delete().eq("id", id);
+  if (error) { toast("Kunde inte ta bort: " + error.message); return; }
+  chat.msgs = chat.msgs.filter(m => m.id !== id); renderChat();
+}
+// Realtid: nytt meddelande → lägg till, pinga om det inte är mitt och inte syns just nu
+function onChatInsert(m) {
+  if (!m || chat.msgs.some(x => x.id === m.id)) return;
+  if (m.to_user && m.to_user !== chatMe() && m.author !== chatMe()) return; // inte min tråd (RLS stoppar normalt redan)
+  chat.msgs.push(m);
+  const chan = chatChanOf(m), mine = m.author === chatMe();
+  const visible = chat.open && chat.chan === chan && !document.hidden;
+  if (chat.open) renderChat();
+  if (visible) { chatMarkRead(chan); return; }
+  updateChatBadge();
+  if (mine) return;
+  if (chan === "all" && !chat.notifyAll) return;
+  const who = m.author_name || chatMemberName(m.author);
+  toast((chan === "all" ? "Chatt · " : "Privat · ") + who + ": " + (m.text.length > 70 ? m.text.slice(0, 70) + "…" : m.text));
+  if (chat.sound) chatPing();
+  if (document.hidden) { const t = document.title; document.title = "● " + who + " skrev · My Cue List"; const back = () => { document.title = t; document.removeEventListener("visibilitychange", back); }; document.addEventListener("visibilitychange", back); }
+}
+function onChatDelete(old) { if (!old || !old.id) return; chat.msgs = chat.msgs.filter(m => m.id !== old.id); if (chat.open) renderChat(); updateChatBadge(); }
+// Kort, diskret pling (två toner) utan ljudfil
+function chatPing() {
+  try {
+    chat.ctx = chat.ctx || new (window.AudioContext || window.webkitAudioContext)();
+    const ctx = chat.ctx; if (ctx.state === "suspended") ctx.resume();
+    [[880, 0], [1174.7, 0.11]].forEach(([f, t0]) => {
+      const o = ctx.createOscillator(), g = ctx.createGain();
+      o.type = "sine"; o.frequency.value = f; o.connect(g); g.connect(ctx.destination);
+      const t = ctx.currentTime + t0;
+      g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.18, t + 0.015); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.22);
+      o.start(t); o.stop(t + 0.25);
+    });
+  } catch (e) {}
+}
+function chatInit() {
+  try { chat.sound = localStorage.getItem("chat-sound") !== "0"; chat.notifyAll = localStorage.getItem("chat-notify-all") !== "0"; } catch (e) {}
+}
+chatInit();
+
 // ---- Teknikerfält ----
 async function reloadTech() {
   if (!cloudActive()) return;
@@ -5747,6 +5971,10 @@ function subscribeProject(pid) {
         async () => { await reloadComments(); render(); renderCmThread(); })
     .on("postgres_changes", { event: "*", schema: "public", table: "tech_fields", filter: "project_id=eq." + pid },
         async () => { await reloadTech(); render(); })
+    .on("postgres_changes", { event: "INSERT", schema: "public", table: "messages", filter: "project_id=eq." + pid },
+        payload => onChatInsert(payload.new))
+    .on("postgres_changes", { event: "DELETE", schema: "public", table: "messages", filter: "project_id=eq." + pid },
+        payload => onChatDelete(payload.old))
     .on("postgres_changes", { event: "UPDATE", schema: "public", table: "projects", filter: "id=eq." + pid },
         payload => onRemoteState(payload.new))
     .on("postgres_changes", { event: "DELETE", schema: "public", table: "projects", filter: "id=eq." + pid },
@@ -5759,6 +5987,7 @@ async function reloadMembers() {
   if (!cloudActive()) return;
   const { data } = await sb.from("members").select("role,user_id,profiles(username,avatar_url)").eq("project_id", cloud.project.id);
   if (data) cloud.members = data;
+  if (chat.open) renderChat();
   // om min egen roll ändrats (eller jag tagits bort) – uppdatera
   await refreshLevel(); // roll kan ha ändrats → skaparrätt kan ha ändrats
   const mine = cloud.members.find(m => m.user_id === cloud.user.id);
