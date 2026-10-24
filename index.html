@@ -750,11 +750,18 @@ const SUPA = {
     </div>
   </div>
   <div class="col-hint" style="margin-top:4px"><b>Sök i arkivet</b> = ditt eget fingerprint-arkiv här i webbläsaren (skisser, omdöpta filer). <b>Sök externt (AudD)</b> = tjänst på nätet som känner igen utgiven musik, t.ex. tempmusik från film och skivor – kräver inloggning, 12 s av filen skickas, och varje sökning räknas mot potten (se Konton).</div>
+  <div id="arch-share-row" style="display:none;align-items:center;gap:14px;flex-wrap:wrap;margin-top:8px;font-size:13px">
+    <span style="display:inline-flex;align-items:center;gap:6px"><input type="checkbox" id="arch-share" style="width:14px;height:14px;margin:0;flex:none"><label for="arch-share" style="display:inline;margin:0;text-transform:none;letter-spacing:0;font-size:13px;color:var(--text);cursor:pointer">Dela skanningen med produktionen <b id="arch-share-name"></b></label></span>
+    <span class="col-hint" style="margin:0;padding:0">Bara fingerprint (hash-värden) och filnamn laddas upp – aldrig ljud eller sökvägar. Synligt endast för produktionens medlemmar.</span>
+  </div>
   <div id="arch-status" class="col-hint"></div>
   <div id="arch-results"></div>
-  <div style="display:flex;gap:8px;margin-top:10px;align-items:center">
+  <div style="display:flex;gap:8px;margin-top:10px;align-items:center;flex-wrap:wrap">
     <span id="arch-count" class="col-hint" style="margin:0"></span>
+    <span id="arch-shared-info" class="col-hint" style="margin:0"></span>
     <span style="flex:1"></span>
+    <button id="arch-sync-btn" style="display:none" onclick="fpSyncShared(true)" title="Hämtar produktionens delade fingerprints till den här webbläsaren">Hämta produktionens arkiv</button>
+    <button id="arch-unshare-btn" style="display:none" onclick="fpUnshareMine()" title="Tar bort de fingerprints du själv delat med produktionen">Ta bort mina delade</button>
     <button class="danger" onclick="archiveClear()">Töm arkivet</button>
   </div>
 </div>
@@ -3042,7 +3049,15 @@ function archStatus(m) { document.getElementById("arch-status").textContent = m;
 function toggleArchive() {
   const p = document.getElementById("arch-panel");
   p.classList.toggle("open");
-  if (p.classList.contains("open")) { closeOtherPanels("arch-panel"); updateArchCount(); p.scrollIntoView({ behavior: "smooth", block: "start" }); }
+  if (p.classList.contains("open")) {
+    closeOtherPanels("arch-panel"); updateArchCount(); p.scrollIntoView({ behavior: "smooth", block: "start" });
+    const on = cloudActive();
+    document.getElementById("arch-share-row").style.display = on && isAdmin() ? "flex" : "none";
+    document.getElementById("arch-sync-btn").style.display = on ? "" : "none";
+    document.getElementById("arch-unshare-btn").style.display = on && isAdmin() ? "" : "none";
+    if (on) { document.getElementById("arch-share-name").textContent = cloud.project.name; fpSyncShared(false); }
+    else document.getElementById("arch-shared-info").textContent = "";
+  }
 }
 
 function idbOpen() {
@@ -3098,8 +3113,8 @@ function idbClearTracks() {
 
 async function updateArchCount() {
   try {
-    const n = await idbCountTracks();
-    document.getElementById("arch-count").textContent = `${n} filer i arkivet`;
+    let n = 0, sh = 0; await idbEachTrack(t => { if (t.path.startsWith("shared:")) sh++; else n++; });
+    document.getElementById("arch-count").textContent = `${n} egna filer i arkivet` + (sh ? ` + ${sh} delade` : "");
   } catch (e) {
     document.getElementById("arch-count").textContent =
       "Arkivet otillgängligt — webbläsaren blockerar databasen (IndexedDB) för lokala filer. Testa Chrome.";
@@ -3150,8 +3165,10 @@ async function archiveScan(files) {
     try {
       // snabbfilter: för små filer kan inte nå min-längden (ens hårt komprimerade)
       if (file.size < minS * 8000) { filtered++; done++; continue; }
+      const share = cloudActive() && isAdmin() && document.getElementById("arch-share").checked;
       const existing = await idbGetTrack(path);
       if (existing && existing.size === file.size && existing.mtime === file.lastModified) {
+        if (share && !existing.shared) { archStatus(`Delar ${done + 1}/${audio.length}: ${file.name}`); await fpShareTrack(existing); }
         skipped++; done++;
         continue;
       }
@@ -3163,10 +3180,9 @@ async function archiveScan(files) {
       const pairs = fpHashes(peaks);
       const flat = new Int32Array(pairs.length * 2);
       pairs.forEach(([h, t], i) => { flat[i * 2] = h; flat[i * 2 + 1] = t; });
-      await idbPutTrack({
-        path, name: file.name.replace(/\.[^.]+$/, ""), size: file.size,
-        mtime: file.lastModified, dur: samples.length / sr, sr, hashes: flat
-      });
+      const rec = { path, name: file.name.replace(/\.[^.]+$/, ""), size: file.size, mtime: file.lastModified, dur: samples.length / sr, sr, hashes: flat };
+      await idbPutTrack(rec);
+      if (share) { archStatus(`Delar ${done + 1}/${audio.length}: ${file.name}`); await fpShareTrack(rec); }
       done++;
     } catch (e) {
       failed++; done++;
@@ -3184,7 +3200,93 @@ async function archiveScan(files) {
     (failed ? `, ${failed} kunde inte läsas (t.ex. ${failNames.join(", ")})` : ""));
   updateArchCount();
   document.getElementById("arch-dir-in").value = "";
+  if (cloudActive()) fpSharedInfo();
   if (detected.length && detFile) detIdentify(true); // uppdatera Innehåll-kolumnen direkt
+}
+
+// ---------- Delat SongSpot-arkiv per produktion (Supabase: tabell fp_tracks + Storage-bucket fingerprints) ----------
+// Packning: "FP1" + u32 n + n×u32 hash + n×u16 tid, gzip:at. Ljud eller sökvägar lämnar aldrig datorn.
+async function fpPack(flat) {
+  const n = flat.length / 2, buf = new ArrayBuffer(8 + n * 6), D = new DataView(buf);
+  D.setUint8(0, 70); D.setUint8(1, 80); D.setUint8(2, 49); D.setUint8(3, 0); D.setUint32(4, n, true);
+  for (let i = 0; i < n; i++) { D.setUint32(8 + i * 4, flat[i * 2] >>> 0, true); D.setUint16(8 + n * 4 + i * 2, Math.min(65535, flat[i * 2 + 1]), true); }
+  if (typeof CompressionStream === "undefined") return new Uint8Array(buf);
+  const cs = new Blob([buf]).stream().pipeThrough(new CompressionStream("gzip"));
+  return new Uint8Array(await new Response(cs).arrayBuffer());
+}
+async function fpUnpack(bytes) {
+  let raw = bytes;
+  if (bytes[0] === 0x1f && bytes[1] === 0x8b) {
+    const ds = new Blob([bytes]).stream().pipeThrough(new DecompressionStream("gzip"));
+    raw = new Uint8Array(await new Response(ds).arrayBuffer());
+  }
+  const D = new DataView(raw.buffer, raw.byteOffset, raw.byteLength);
+  if (D.getUint8(0) !== 70 || D.getUint8(1) !== 80) throw new Error("okänt fingerprintformat");
+  const n = D.getUint32(4, true), flat = new Int32Array(n * 2);
+  for (let i = 0; i < n; i++) { flat[i * 2] = D.getUint32(8 + i * 4, true); flat[i * 2 + 1] = D.getUint16(8 + n * 4 + i * 2, true); }
+  return flat;
+}
+async function fpShareTrack(rec) {
+  if (!cloudActive() || !isAdmin()) return;
+  try {
+    const id = (crypto.randomUUID ? crypto.randomUUID() : newId()), pid = cloud.project.id;
+    const packed = await fpPack(rec.hashes);
+    const { error: e1 } = await sb.storage.from("fingerprints").upload(`${pid}/${id}.bin`, new Blob([packed], { type: "application/octet-stream" }), { upsert: true });
+    if (e1) throw e1;
+    const { error: e2 } = await sb.from("fp_tracks").insert({ id, project_id: pid, user_id: cloud.user.id, name: rec.name, dur: rec.dur, sr: rec.sr, n: rec.hashes.length / 2, bytes: packed.length });
+    if (e2) throw e2;
+    rec.shared = id; await idbPutTrack(rec);
+  } catch (e) { console.warn("dela fingerprint", rec.name, e); toast("Kunde inte dela " + rec.name + ": " + (e.message || e)); }
+}
+function fmtMB(b) { return b >= 1048576 ? (b / 1048576).toFixed(1) + " MB" : Math.round(b / 1024) + " kB"; }
+async function fpSharedInfo() {
+  if (!cloudActive()) return [];
+  const { data, error } = await sb.from("fp_tracks").select("id,user_id,name,dur,sr,n,bytes").eq("project_id", cloud.project.id);
+  if (error) { document.getElementById("arch-shared-info").textContent = "Delat arkiv: " + error.message; return []; }
+  const rows = data || [], bytes = rows.reduce((a, r) => a + (r.bytes || 0), 0);
+  document.getElementById("arch-shared-info").textContent = rows.length ? `· produktionen delar ${rows.length} filer (${fmtMB(bytes)})` : "· produktionen har inget delat arkiv ännu";
+  return rows;
+}
+// hämtar produktionens delade fingerprints till lokala IndexedDB (nyckel "shared:<id>"), tar bort sådana som försvunnit
+async function fpSyncShared(verbose) {
+  if (!cloudActive()) return;
+  const rows = await fpSharedInfo();
+  const want = new Map(rows.map(r => [r.id, r]));
+  const have = new Set(); const stale = [];
+  await idbEachTrack(t => { if (t.path.startsWith("shared:")) { const id = t.path.slice(7); if (want.has(id)) have.add(id); else stale.push(t.path); } });
+  const missing = rows.filter(r => !have.has(r.id));
+  if (!missing.length && !stale.length) { if (verbose) archStatus("Produktionens arkiv är redan hämtat"); return; }
+  let names = {};
+  try { const { data } = await sb.from("profiles").select("id,username"); (data || []).forEach(p => names[p.id] = p.username); } catch (e) {}
+  let got = 0;
+  for (const r of missing) {
+    try {
+      archStatus(`Hämtar produktionens arkiv … ${got + 1}/${missing.length}: ${r.name}`);
+      const { data, error } = await sb.storage.from("fingerprints").download(`${cloud.project.id}/${r.id}.bin`);
+      if (error) throw error;
+      const flat = await fpUnpack(new Uint8Array(await data.arrayBuffer()));
+      await idbPutTrack({ path: "shared:" + r.id, name: r.name, size: 0, mtime: 0, dur: r.dur, sr: r.sr, hashes: flat, shared: r.id, by: names[r.user_id] || "", proj: cloud.project.name, mine: r.user_id === cloud.user.id });
+      got++;
+    } catch (e) { console.warn("hämta fingerprint", r.name, e); }
+  }
+  if (stale.length) { const db = await idbOpen(); await new Promise(res => { const tx = db.transaction("tracks", "readwrite"); stale.forEach(k => tx.objectStore("tracks").delete(k)); tx.oncomplete = () => { db.close(); res(); }; }); }
+  archStatus(`Produktionens arkiv: ${got} nya hämtade` + (stale.length ? `, ${stale.length} borttagna` : ""));
+  updateArchCount();
+}
+async function fpUnshareMine() {
+  if (!cloudActive()) return;
+  const { data } = await sb.from("fp_tracks").select("id").eq("project_id", cloud.project.id).eq("user_id", cloud.user.id);
+  const mine = data || [];
+  if (!mine.length) { toast("Du har inte delat något i den här produktionen"); return; }
+  if (!confirm(`Ta bort dina ${mine.length} delade fingerprints från produktionen? Ditt lokala arkiv påverkas inte.`)) return;
+  const paths = mine.map(r => `${cloud.project.id}/${r.id}.bin`);
+  for (let i = 0; i < paths.length; i += 100) await sb.storage.from("fingerprints").remove(paths.slice(i, i + 100));
+  await sb.from("fp_tracks").delete().eq("project_id", cloud.project.id).eq("user_id", cloud.user.id);
+  const ids = new Set(mine.map(r => r.id));
+  const fix = []; await idbEachTrack(t => { if (t.shared && ids.has(t.shared) && !t.path.startsWith("shared:")) fix.push(t); });
+  for (const t of fix) { delete t.shared; await idbPutTrack(t); }
+  await fpSyncShared(false);
+  toast(`${mine.length} delade fingerprints borttagna`);
 }
 
 async function archiveIdentify() {
@@ -3229,7 +3331,7 @@ async function archiveIdentify() {
         const c = e[0] + n[0];
         if (c >= thr && (!best || c > best.c)) best = { c, pos: (e[1] + n[1]) / c };
       }
-      if (best) results.push({ name: track.name, path: track.path, pos: Math.max(0, best.pos), dur: track.dur, score: best.c });
+      if (best) results.push({ name: track.name, path: track.path, by: track.by, proj: track.proj, pos: Math.max(0, best.pos), dur: track.dur, score: best.c });
     });
     results.sort((a, b) => b.score - a.score);
     archStatus(`${file.name} → ` + (results.length
@@ -3247,7 +3349,7 @@ function renderArchResults(results) {
     <thead><tr><th>Ursprungsfil</th><th>Sökvägen</th><th>Klippet börjar</th><th>Styrka</th></tr></thead><tbody>` +
     results.map(r => `<tr>
       <td>${esc(r.name)}</td>
-      <td style="color:var(--muted);font-size:12px">${esc(r.path)}</td>
+      <td style="color:var(--muted);font-size:12px">${r.path.startsWith("shared:") ? `<span style="color:var(--accent)">delad</span> av ${esc(r.by || "okänd")}${r.proj ? " · " + esc(r.proj) : ""}` : esc(r.path)}</td>
       <td class="mono">${fmtSec(r.pos)} in i originalet (${fmtSec(r.dur)} långt)</td>
       <td class="mono">${r.score}</td>
     </tr>`).join("") + `</tbody></table>`;
@@ -5123,6 +5225,13 @@ async function openAccounts() {
       ${rows}
     </div>`;
   }).join("") || `<div class="cm-empty">Inga konton.</div>`;
+  try { // Delat SongSpot-arkiv per produktion
+    const { data: fs } = await sb.rpc("fp_stats");
+    if (fs && fs.length) el.innerHTML += `<div class="proj-row" style="flex-direction:column;align-items:stretch;margin-top:10px">
+      <div><b>Delade SongSpot-arkiv</b> <span class="muted">${fmtMB(fs.reduce((a, r) => a + (r.bytes || 0), 0))} av 1 GB gratis lagring</span></div>
+      ${fs.map(r => `<div class="muted" style="margin:3px 0 0 28px">${esc(r.name)}: ${r.n} filer, ${fmtMB(r.bytes || 0)}</div>`).join("")}
+    </div>`;
+  } catch (e) {}
   try { // AudD-förbrukning
     const { data: st } = await sb.rpc("audd_stats");
     if (st) el.innerHTML += `<div class="proj-row" style="flex-direction:column;align-items:stretch;margin-top:10px">
