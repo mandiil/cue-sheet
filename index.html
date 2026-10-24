@@ -790,6 +790,7 @@ const SUPA = {
     <span style="display:inline-flex;align-items:center;gap:5px;white-space:nowrap" title="Tidslinjen ligger kvar högst upp medan listan scrollar, och listan scrollar själv till cuen du pekar på"><input type="checkbox" id="tl-pin" style="width:14px;height:14px;margin:0;flex:none" onchange="tlPin(this.checked)"><label for="tl-pin" style="display:inline;margin:0;font-size:12px;text-transform:none;letter-spacing:0;color:var(--muted);cursor:pointer;white-space:nowrap">Fäst &amp; följ i listan</label></span>
     <button id="tl-open-btn" onclick="document.getElementById('tl-aaf-in').click()" title="Ljudet ligger i AAF-filen och sparas inte i projektet – öppna filen igen för att lyssna">Öppna AAF för ljud…</button>
     <input type="file" id="tl-aaf-in" accept=".aaf" style="display:none" onchange="tlOpenFile(event)">
+    <button class="danger admin-only" onclick="tlClear()" title="Tar bort tidslinjen (klippen och vågformerna) ur projektet. Cuerna i listan påverkas inte. Importera AAF:en igen för att få tillbaka den.">Töm</button>
     <button onclick="toggleTimeline()">Stäng</button>
   </div>
   <div id="tl-scroll" tabindex="0">
@@ -4826,6 +4827,16 @@ function tlNeedAudio(on = true, hold = false) {
   const r = b.getBoundingClientRect();
   if (r.top < 0 || r.bottom > window.innerHeight) b.scrollIntoView({ behavior: "smooth", block: "center" });
   if (hold) tlGlowTimer = setTimeout(() => b.classList.remove("pulse"), 4000);
+}
+function tlClear() {
+  if (!isAdmin()) return;
+  const n = state.timeline && state.timeline.clips ? state.timeline.clips.length : 0;
+  if (!n) { toast("Tidslinjen är redan tom"); return; }
+  if (!confirm(`Töm tidslinjen (${n} klipp med vågformer)?\n\nCuerna i listan påverkas inte. Importera AAF:en igen för att få tillbaka tidslinjen.`)) return;
+  tlStop();
+  delete state.timeline; tl.reader = null; tl.clips = []; tl.sig = null; tl.pos = 0; tl.sel = -1; tl.hover = -1;
+  tlResize(); tlDraw(); tlInfo(); tlBtn(); save();
+  toast("Tidslinjen tömd");
 }
 function tlRestorePin() {
   let pin = false; try { pin = !!localStorage.getItem("tl-pin"); } catch (e) {}
