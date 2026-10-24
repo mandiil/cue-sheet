@@ -675,9 +675,13 @@ const SUPA = {
 </div>
 
 <div class="panel" id="hist-panel" style="display:none">
-  <label style="margin-bottom:10px">Historik — snapshots</label>
+  <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;flex-wrap:wrap">
+    <label style="margin:0" id="hist-title">Historik — snapshots</label>
+    <span style="flex:1"></span>
+    <button id="hist-save-btn" class="admin-only" style="display:none" onclick="saveCloudVersion()" title="Sparar en namngiven version i molnet som aldrig gallras">Spara version nu…</button>
+  </div>
   <div id="hist-list"></div>
-  <div class="col-hint">Snapshots skapas automatiskt (max var 2:a minut) och alltid före rensning, import och återställning. De 30 senaste sparas.</div>
+  <div class="col-hint" id="hist-hint">Snapshots skapas automatiskt (max var 2:a minut) och alltid före rensning, import och återställning. De 30 senaste sparas.</div>
 </div>
 
 <div class="panel" id="detect-panel">
@@ -1634,7 +1638,7 @@ function del(i) {
 }
 function clearCues() {
   if (!state.cues.length) { toast("Inga cuer att rensa"); return; }
-  if (!confirm(`Är du säker? Detta tar bort alla ${state.cues.length} cuer.\n\n(Ett snapshot sparas i Historik så det går att ångra.)`)) return;
+  if (!confirm(`Är du säker? Detta tar bort alla ${state.cues.length} cuer.\n\n(${cloudActive() ? "En version sparas automatiskt i molnet – gå till Historik för att ångra." : "Ett snapshot sparas i Historik så det går att ångra."})`)) return;
   snapshot("före rensning av cuer", true);
   state.cues = [];
   render();
@@ -2690,6 +2694,13 @@ function toggleHistory() {
 }
 
 function renderHistory() {
+  const cloudMode = cloudActive();
+  document.getElementById("hist-title").textContent = cloudMode ? "Historik — versioner i molnet" : "Historik — snapshots";
+  document.getElementById("hist-save-btn").style.display = cloudMode && isAdmin() ? "" : "none";
+  document.getElementById("hist-hint").textContent = cloudMode
+    ? "Versioner sparas automatiskt i molnet: en gång i timmen när något ändras, och alltid innan många cuer försvinner (skydd mot misstag). Alla i produktionen ser samma lista. Gallring: allt i 3 dygn, sedan en per dag i 60 dygn, sedan en per vecka i ett år – manuella versioner behålls alltid. Vid återställning sparas nuläget först."
+    : "Snapshots skapas automatiskt (max var 2:a minut) och alltid före rensning, import och återställning. De 30 senaste sparas i den här webbläsaren.";
+  if (cloudMode) { renderCloudVersions(); return; }
   let hist = [];
   try { hist = JSON.parse(localStorage.getItem(HKEYf()) || "[]"); } catch (e) {}
   const el = document.getElementById("hist-list");
@@ -2707,6 +2718,51 @@ function renderHistory() {
     }).join("") + `</tbody></table>`;
 }
 
+// ---- Versioner i molnet (tabell project_versions, trigger på projects.state) ----
+const VKIND = { auto: "automatisk", guard: "skydd", manual: "manuell" };
+async function renderCloudVersions() {
+  const el = document.getElementById("hist-list");
+  el.innerHTML = `<div class="col-hint">Hämtar versioner…</div>`;
+  const [{ data, error }, { data: profs }] = await Promise.all([
+    sb.from("project_versions").select("id,created_at,created_by,label,kind,n_cues").eq("project_id", cloud.project.id).order("created_at", { ascending: false }).limit(300),
+    sb.from("profiles").select("id,username")
+  ]);
+  if (error) { el.innerHTML = `<div class="col-hint">${esc(error.message)}</div>`; return; }
+  const names = Object.fromEntries((profs || []).map(p => [p.id, p.username]));
+  if (!data || !data.length) { el.innerHTML = `<div class="col-hint">Inga versioner ännu – den första sparas automatiskt vid nästa ändring.</div>`; return; }
+  el.innerHTML = `<table class="det-table"><thead><tr><th>Tidpunkt</th><th>Typ</th><th>Händelse</th><th>Av</th><th>Cuer</th><th></th></tr></thead><tbody>` +
+    data.map(v => {
+      const d = new Date(v.created_at), col = v.kind === "guard" ? "#d9534f" : v.kind === "manual" ? "var(--accent)" : "var(--muted)";
+      return `<tr>
+        <td class="mono">${d.toLocaleDateString("sv-SE")} ${d.toLocaleTimeString("sv-SE", { hour: "2-digit", minute: "2-digit" })}</td>
+        <td><span style="color:${col}">${VKIND[v.kind] || esc(v.kind)}</span></td>
+        <td>${esc(v.label)}</td>
+        <td>${esc(names[v.created_by] || "–")}</td>
+        <td>${v.n_cues}</td>
+        <td>${isAdmin() ? `<button class="icon" onclick="restoreCloudVersion('${v.id}','${esc(d.toLocaleString("sv-SE"))}',${v.n_cues})">Återställ</button>` : ""}</td>
+      </tr>`;
+    }).join("") + `</tbody></table>`;
+}
+async function saveCloudVersion() {
+  if (!cloudActive() || !isAdmin()) return;
+  const label = prompt("Namn på versionen (t.ex. 'Innan leverans till klipp'):", "");
+  if (label === null) return;
+  save();
+  await new Promise(r => setTimeout(r, 900)); // låt pågående sparning gå igenom
+  const { error } = await sb.rpc("save_version", { p_project: cloud.project.id, p_label: label });
+  if (error) { toast("Kunde inte spara version: " + error.message); return; }
+  toast("Version sparad"); renderCloudVersions();
+}
+async function restoreCloudVersion(id, when, n) {
+  if (!cloudActive() || !isAdmin()) return;
+  if (!confirm(`Återställ produktionen till versionen från ${when} (${n} cuer)?\n\nNuvarande läge sparas först som en egen version, så det går att ångra. Alla i produktionen får det återställda arket direkt.`)) return;
+  const { error } = await sb.rpc("restore_version", { p_version: id });
+  if (error) { toast("Kunde inte återställa: " + error.message); return; }
+  cloud.lastSent = null;
+  await openProject(cloud.project.id);
+  toast("Återställt"); renderCloudVersions();
+  document.getElementById("hist-panel").classList.add("open");
+}
 function restoreSnapshot(i) {
   try {
     const hist = JSON.parse(localStorage.getItem(HKEYf()) || "[]");
