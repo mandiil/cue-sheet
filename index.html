@@ -1556,7 +1556,8 @@ document.addEventListener("keydown", ev => {
   const q = state.cues[i], f = JSON.parse(JSON.stringify(q.f || {}));
   delete f.no; delete f.missing; delete f.comments; state.columns.filter(c => c.type === "ts").forEach(c => delete f[c.id]);
   rowClip = { f, sub: q.sub ? JSON.parse(JSON.stringify(q.sub)) : null, token: `⟪My Cue List: cue ${(q.f && q.f.no) || i + 1}⟫`, from: (q.f && q.f.no) || String(i + 1) };
-  try { navigator.clipboard.writeText(rowClip.token); } catch (e) {}
+  rowClip.sys = false;
+  try { navigator.clipboard.writeText(rowClip.token).then(() => { rowClip.sys = true; }).catch(() => {}); } catch (e) {}
   const tr = el.closest("tr"); tr.classList.add("tl-flash"); setTimeout(() => tr.classList.remove("tl-flash"), 900);
   toast(`Rad ${rowClip.from} kopierad – ställ dig i en annan rad och tryck ${ev.metaKey ? "Cmd" : "Ctrl"}+V`);
 });
@@ -1565,7 +1566,7 @@ document.addEventListener("paste", ev => {
   const el = document.activeElement; if (!el || !/^(INPUT|SELECT)$/.test(el.tagName)) return;
   const i = rowOfInput(el); if (i < 0) return;
   const text = (ev.clipboardData && ev.clipboardData.getData("text")) || "";
-  if (text && text !== rowClip.token) return; // riktig text i urklipp → vanlig inklistring
+  if (rowClip.sys && text && text !== rowClip.token) return; // riktig text i urklipp → vanlig inklistring (om webbläsaren lät oss lägga märklappen)
   ev.preventDefault();
   const q = state.cues[i], no = (q.f && q.f.no) || String(i + 1);
   snapshot(`före inklistring av rad ${rowClip.from} i rad ${no}`, true);
