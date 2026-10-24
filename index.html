@@ -912,13 +912,14 @@ const DEFAULT_COLUMNS = [
   { id: "sourcecue",label: "Source Cue",      type: "text",   group: 2 },
   { id: "solosimp", label: "Solos Imported",  type: "check",  group: 2 },
   { id: "orchimp",  label: "Orch Imported",   type: "check",  group: 2 },
+  { id: "prerec",   label: "Pre rec comments", type: "comment", group: 2 },
   { id: "premix",   label: "Pre Mix Status",  type: "select", group: 3,
     options: ["Full mix settings imported"] },
   { id: "mixprep",  label: "MIXPREP",         type: "check",  group: 3 },
   { id: "mixver",   label: "Mix Version",     type: "text",   group: 3 },
-  { id: "mixcomm",  label: "Mix Prep Comments", type: "text", group: 3 },
+  { id: "mixcomm",  label: "Mix Prep Comments", type: "comment", group: 3 },
 ];
-const COL_VERSION = 4;
+const COL_VERSION = 5;
 const GROUP_NAMES = ["Alltid synlig", "View One", "View Two", "View Three"];
 
 // ---------- Mallar ----------
@@ -1284,8 +1285,8 @@ function render() {
           : `<td class="col-short${tc}"><input ${d} value="${esc(v)}" placeholder="m:ss" size="${Math.max(4, v.length + 1)}"
               oninput="this.size=Math.max(4,this.value.length+1);updF(${i},'${col.id}',this.value)"></td>`;
       } else if (col.type === "comment") {
-        const cm = ensureCm(cue);
-        cells += `<td class="col-comment">${cmButton(i, cm)}</td>`;
+        const cm = ensureCm(cue, col.id);
+        cells += `<td class="col-comment">${cmButton(i, cm, col.id)}</td>`;
       } else if (col.id === "filename") {
         // rubriken växlar mellan slutgiltigt filnamn (f.filename) och tempnamn från AAF/import (f.temp)
         const fid = fnMode() === "temp" ? "temp" : "filename", fv = (cue.f && cue.f[fid]) || "";
@@ -1578,9 +1579,9 @@ document.addEventListener("keydown", ev => {
   if (i < 0 || !isAdmin()) return;
   ev.preventDefault();
   const q = state.cues[i], f = JSON.parse(JSON.stringify(q.f || {}));
-  delete f.no; delete f.missing; delete f.comments; state.columns.filter(c => c.type === "ts").forEach(c => delete f[c.id]);
-  const cm = ensureCm(q);
-  rowClip = { f, sub: q.sub ? JSON.parse(JSON.stringify(q.sub)) : null, cm: JSON.parse(JSON.stringify(cm)), fromId: q.id,
+  delete f.no; delete f.missing; state.columns.filter(c => c.type === "ts" || c.type === "comment").forEach(c => delete f[c.id]);
+  const cms = {}; cmCols().forEach(id => { cms[id] = JSON.parse(JSON.stringify(ensureCm(q, id))); });
+  rowClip = { f, sub: q.sub ? JSON.parse(JSON.stringify(q.sub)) : null, cms, fromId: q.id,
               token: `⟪My Cue List: cue ${(q.f && q.f.no) || i + 1}⟫`, from: (q.f && q.f.no) || String(i + 1), sys: false };
   try { navigator.clipboard.writeText(rowClip.token).then(() => { rowClip.sys = true; }).catch(() => {}); } catch (e) {}
   const tr = cueRows()[i]; if (tr) { tr.classList.add("tl-flash"); setTimeout(() => tr.classList.remove("tl-flash"), 900); }
@@ -1601,18 +1602,21 @@ document.addEventListener("paste", ev => {
   Object.keys(rowClip.f).forEach(k => { q.f[k] = rowClip.f[k]; });
   if (rowClip.sub) q.sub = JSON.parse(JSON.stringify(rowClip.sub)); else delete q.sub;
   // kommentarstråden: lokalt kopieras tråden, i molnet läggs kopior in med ursprunglig författare i namnet
-  if (q.id !== rowClip.fromId && rowClip.cm && rowClip.cm.thread && rowClip.cm.thread.length) {
-    if (cloudActive()) { ensureCueIds(); cloudCopyComments(rowClip.cm, q.id); }
-    else { const cm = ensureCm(q); cm.thread = cm.thread.concat(JSON.parse(JSON.stringify(rowClip.cm.thread))); if (!cm.status) cm.status = rowClip.cm.status; }
+  if (q.id !== rowClip.fromId && rowClip.cms) {
+    Object.entries(rowClip.cms).forEach(([colId, src]) => {
+      if (!src || !src.thread || !src.thread.length) return;
+      if (cloudActive()) { ensureCueIds(); cloudCopyComments(src, q.id, colId); }
+      else { const cm = ensureCm(q, colId); cm.thread = cm.thread.concat(JSON.parse(JSON.stringify(src.thread))); if (!cm.status) cm.status = src.status; }
+    });
   }
   touchTs(q); render();
   const tr = cueRows()[i]; if (tr) { tr.classList.add("tl-flash"); setTimeout(() => tr.classList.remove("tl-flash"), 1200); }
   selectRow(-1);
   toast(`Rad ${rowClip.from} inklistrad i rad ${no} (numret behålls)`);
 });
-async function cloudCopyComments(cm, toCueId) {
+async function cloudCopyComments(cm, toCueId, col) {
   try {
-    const rows = cm.thread.map(e => ({ project_id: cloud.project.id, cue_id: toCueId, kind: e.k, text: e.t || "", author: cloud.user.id, author_name: e.by || cloud.profile.username }));
+    const rows = cm.thread.map(e => ({ project_id: cloud.project.id, cue_id: toCueId, col: col || "comments", kind: e.k, text: e.t || "", author: cloud.user.id, author_name: e.by || cloud.profile.username }));
     const { error } = await sb.from("comments").insert(rows);
     if (error) throw error;
     await reloadComments(); render();
@@ -1651,8 +1655,9 @@ async function mergeCues(ai, bi) {
   const af = a.f || (a.f = {}), bf = b.f || {};
   const fa = parseTC(af.tc || ""), fb = parseTC(bf.tc || "");
   Object.keys(bf).forEach(k => {
-    if (k === "no" || k === "missing" || k === "comments") return;
+    if (k === "no" || k === "missing") return;
     const col = state.columns.find(c => c.id === k), va = af[k], vb = bf[k];
+    if (col && col.type === "comment") return;
     if (!vb || va === vb) return;
     if (!va) { af[k] = vb; return; }
     if (k === "tc") { af.tc = fa != null && fb != null && fb < fa ? vb : va; return; }
@@ -1669,9 +1674,11 @@ async function mergeCues(ai, bi) {
     const tb = techVals[b.id] || {}, ta = techVals[a.id] || {};
     for (const [k, v] of Object.entries(tb)) if (v && !ta[k]) { (techVals[a.id] = techVals[a.id] || {})[k] = v; cloudSetTech(a.id, k, v); }
   } else {
-    const ca = ensureCm(a), cb = ensureCm(b);
-    ca.thread = ca.thread.concat(cb.thread).sort((x, y) => (x.ts || "").localeCompare(y.ts || ""));
-    if (cb.status === "open" || (cb.status === "answered" && !ca.status)) ca.status = cb.status;
+    cmCols().forEach(id => {
+      const ca = ensureCm(a, id), cb = ensureCm(b, id);
+      ca.thread = ca.thread.concat(cb.thread).sort((x, y) => (x.ts || "").localeCompare(y.ts || ""));
+      if (cb.status === "open" || (cb.status === "answered" && !ca.status)) ca.status = cb.status;
+    });
   }
   if (bf.comments) af.comments = (af.comments ? af.comments + " · " : "") + bf.comments;
   af.comments = (af.comments ? af.comments + " · " : "") + `Ihopslagen med cue ${bn}`;
@@ -1723,39 +1730,46 @@ const CM_ICON = {
 const CM_TITLE = { none: "Lägg till kommentar", open: "Obesvarad kommentar", answered: "Besvarad" };
 const CM_KIND = { comment: "Comment", answer: "Answered", note: "Note" };
 
-function ensureCm(cue) {
-  if (!cue.cm) cue.cm = { status: "", thread: [] };
-  if (!Array.isArray(cue.cm.thread)) cue.cm.thread = [];
-  // migrera gammal fritext i f.comments (auto-detekt, import, äldre projekt) till tråden
-  if (cue.f && typeof cue.f.comments === "string" && cue.f.comments.trim()) {
+// Flera kommentarskolumner (Comments, Pre rec comments, Mix Prep Comments): "comments" bor i cue.cm,
+// övriga i cue.cmx[kolumn-id]. I molnet skiljs de åt med fältet comments.col.
+function cmCols() { return state.columns.filter(c => c.type === "comment").map(c => c.id); }
+function ensureCm(cue, colId) {
+  colId = colId || "comments";
+  let cm;
+  if (colId === "comments") { if (!cue.cm) cue.cm = { status: "", thread: [] }; cm = cue.cm; }
+  else { if (!cue.cmx) cue.cmx = {}; if (!cue.cmx[colId]) cue.cmx[colId] = { status: "", thread: [] }; cm = cue.cmx[colId]; }
+  if (!Array.isArray(cm.thread)) cm.thread = [];
+  // migrera gammal fritext i f[kolumn] (auto-detekt, import, äldre projekt, Mix Prep Comments som text) till tråden
+  if (cue.f && typeof cue.f[colId] === "string" && cue.f[colId].trim()) {
     if (cloudActive()) {
-      if (isAdmin()) { const t = cue.f.comments.trim(); delete cue.f.comments; cloudAddComment(cue.id, "note", t); }
+      if (isAdmin()) { const t = cue.f[colId].trim(); delete cue.f[colId]; cloudAddComment(cue.id, "note", t, colId); }
     } else {
-      cue.cm.thread.push({ k: "note", t: cue.f.comments.trim(), ts: new Date().toISOString(), by: "" });
-      delete cue.f.comments;
+      cm.thread.push({ k: "note", t: cue.f[colId].trim(), ts: new Date().toISOString(), by: "" });
+      delete cue.f[colId];
     }
   }
-  return cue.cm;
+  return cm;
 }
 function cmState(cm) { return cm.status === "open" ? "open" : cm.status === "answered" ? "answered" : "none"; }
-function cmButton(i, cm) {
+function cmButton(i, cm, colId) {
   const s = cmState(cm);
   const n = cm.thread.length;
-  return `<button class="cbtn c-${s}" title="${CM_TITLE[s]}${n ? ` (${n})` : ""}" onclick="openComment(${i})">${CM_ICON[s]}</button>`;
+  return `<button class="cbtn c-${s}" title="${CM_TITLE[s]}${n ? ` (${n})` : ""}" onclick="openComment(${i},'${colId || "comments"}')">${CM_ICON[s]}</button>`;
 }
 function cmText(cm) {
   // textversion för export
   return (cm && cm.thread || []).map(e => `[${CM_KIND[e.k] || e.k}] ${e.t}`).join("\n");
 }
 
-let cmIdx = null;
+let cmIdx = null, cmCol = "comments";
 let cmDown = false; // musnedtryck skedde på bakgrunden (så att textmarkering inte stänger rutan)
-function openComment(i) {
-  cmIdx = i;
+function openComment(i, colId) {
+  cmIdx = i; cmCol = colId || "comments";
   const cue = state.cues[i];
   const f = cue.f || {};
+  const col = state.columns.find(c => c.id === cmCol);
   document.getElementById("cm-title").textContent =
-    `Cue ${f.no || "–"}${f.titel ? " · " + f.titel : ""}`;
+    `Cue ${f.no || "–"}${f.titel ? " · " + f.titel : ""}${cmCol !== "comments" && col ? " – " + col.label : ""}`;
   document.getElementById("cm-text").value = "";
   renderCmThread();
   document.getElementById("cm-overlay").classList.add("open");
@@ -1773,7 +1787,7 @@ function fmtTs(iso) {
 }
 function renderCmThread() {
   if (cmIdx == null) return;
-  const cm = ensureCm(state.cues[cmIdx]);
+  const cm = ensureCm(state.cues[cmIdx], cmCol);
   const s = cmState(cm);
   document.getElementById("cm-sub").textContent =
     s === "open" ? "Väntar på svar" : s === "answered" ? "Besvarad" : "";
@@ -1791,7 +1805,7 @@ function renderCmThread() {
   el.scrollTop = el.scrollHeight;
 }
 function cmPush(kind, text) {
-  const cm = ensureCm(state.cues[cmIdx]);
+  const cm = ensureCm(state.cues[cmIdx], cmCol);
   cm.thread.push({ k: kind, t: text, ts: new Date().toISOString(), by: "" });
 }
 function cmComment() {
@@ -1799,9 +1813,9 @@ function cmComment() {
   const ta = document.getElementById("cm-text");
   const text = ta.value.trim();
   if (!text) { toast("Skriv en kommentar först"); ta.focus(); return; }
-  if (cloudActive()) { cloudAddComment(state.cues[cmIdx].id, "comment", text); ta.value = ""; return; }
+  if (cloudActive()) { cloudAddComment(state.cues[cmIdx].id, "comment", text, cmCol); ta.value = ""; return; }
   cmPush("comment", text);
-  ensureCm(state.cues[cmIdx]).status = "open";
+  ensureCm(state.cues[cmIdx], cmCol).status = "open";
   ta.value = "";
   renderCmThread(); render();
 }
@@ -1809,24 +1823,24 @@ function cmAnswered() {
   if (cmIdx == null) return;
   const ta = document.getElementById("cm-text");
   const text = ta.value.trim();
-  if (cloudActive()) { cloudAddComment(state.cues[cmIdx].id, "answer", text); ta.value = ""; return; }
+  if (cloudActive()) { cloudAddComment(state.cues[cmIdx].id, "answer", text, cmCol); ta.value = ""; return; }
   if (text) cmPush("answer", text);
-  ensureCm(state.cues[cmIdx]).status = "answered";
+  ensureCm(state.cues[cmIdx], cmCol).status = "answered";
   ta.value = "";
   renderCmThread(); render();
 }
 function cmReset() {
   if (cmIdx == null) return;
-  const cm = ensureCm(state.cues[cmIdx]);
+  const cm = ensureCm(state.cues[cmIdx], cmCol);
   if (cm.thread.length && !confirm("Ta bort hela tråden och återställ knappen?")) return;
-  if (cloudActive()) { cloudResetComments(state.cues[cmIdx].id); closeComment(); return; }
+  if (cloudActive()) { cloudResetComments(state.cues[cmIdx].id, cmCol); closeComment(); return; }
   cm.thread = []; cm.status = "";
   render();
   closeComment();
 }
 function cmDelete(j) {
   if (cmIdx == null) return;
-  const cm = ensureCm(state.cues[cmIdx]);
+  const cm = ensureCm(state.cues[cmIdx], cmCol);
   if (cloudActive()) { const e = cm.thread[j]; if (e && e.rid) cloudDeleteComment(e.rid); return; }
   cm.thread.splice(j, 1);
   if (!cm.thread.length) cm.status = "";
@@ -1894,7 +1908,7 @@ function clearCues() {
 function dup(i) {
   const copy = JSON.parse(JSON.stringify(state.cues[i]));
   copy.id = newId();
-  copy.cm = { status: "", thread: [] }; // kopian startar utan kommentarstråd
+  copy.cm = { status: "", thread: [] }; delete copy.cmx; // kopian startar utan kommentarstrådar
   state.cues.splice(i + 1, 0, copy);
   render();
 }
@@ -3120,11 +3134,16 @@ function load() {
   // Comments-kolumnen är numera en kommentarsknapp (gammal fritext flyttas in i tråden vid rendering)
   const cc = state.columns.find(c => c.id === "comments");
   if (cc && cc.type === "text") cc.type = "comment";
+  // Mix Prep Comments blev kommentarstråd 2026-10-24 (samma utseende som Comments, gammal text flyttas in som Note)
+  const mc = state.columns.find(c => c.id === "mixcomm");
+  if (mc && mc.type === "text") mc.type = "comment";
   // lägg till nytillkomna standardkolumner i sparade projekt
   if ((state.colVer || 1) < COL_VERSION) {
     DEFAULT_COLUMNS.forEach(dc => {
       if (!state.columns.some(c => c.id === dc.id)) {
-        state.columns.push(JSON.parse(JSON.stringify(dc)));
+        const col = JSON.parse(JSON.stringify(dc));
+        const prev = DEFAULT_COLUMNS[DEFAULT_COLUMNS.indexOf(dc) - 1], pi = prev ? state.columns.findIndex(c => c.id === prev.id) : -1;
+        if (pi >= 0) state.columns.splice(pi + 1, 0, col); else state.columns.push(col);
       }
     });
     state.colVer = COL_VERSION;
@@ -5143,7 +5162,7 @@ function exportXlsx() {
   ];
   state.cues.forEach(c => {
     rows.push(ecols.map(col => {
-      if (col.type === "comment") return cmText(ensureCm(c));
+      if (col.type === "comment") return cmText(ensureCm(c, col.id));
       const v = exportVal(c, col);
       if (col.type === "vercheck") {
         const cur = (getF(c, state.columns.find(x => x.id === col.ref)) || "").trim();
@@ -5189,7 +5208,7 @@ function closeExport() { document.getElementById("exp-overlay").classList.remove
 function cellText(cue, col) {
   // textversion av en cell (för PDF)
   if (col.type === "comment") {
-    const cm = ensureCm(cue);
+    const cm = ensureCm(cue, col.id);
     if (!cm.thread.length) return "";
     return cm.thread.map(e => `<span class="cm-k">${esc(CM_KIND[e.k] || e.k)}</span> ${esc(e.t)}${e.by ? ` <span class="cm-k">– ${esc(e.by)}</span>` : ""}`).join("<br>");
   }
@@ -5596,7 +5615,7 @@ function applyRole() {
 // ---- Spara arket (admin) ----
 function stripForCloud(s) {
   const c = JSON.parse(JSON.stringify(s));
-  (c.cues || []).forEach(q => { delete q.cm; }); // kommentarer bor i egen tabell
+  (c.cues || []).forEach(q => { delete q.cm; delete q.cmx; }); // kommentarer bor i egen tabell
   delete c.recActive; delete c.recSel;
   return c;
 }
@@ -5660,12 +5679,17 @@ async function reloadComments() {
   applyCloudComments();
 }
 function applyCloudComments() {
-  const byCue = {};
-  cloudComments.forEach(r => (byCue[r.cue_id] = byCue[r.cue_id] || []).push(r));
-  state.cues.forEach(c => { c.cm = cmFromRows(byCue[c.id] || []); });
+  const byCue = {}; // cue_id → kolumn → rader
+  cloudComments.forEach(r => { const col = r.col || "comments"; const m = byCue[r.cue_id] = byCue[r.cue_id] || {}; (m[col] = m[col] || []).push(r); });
+  state.cues.forEach(c => {
+    const m = byCue[c.id] || {};
+    c.cm = cmFromRows(m.comments || []);
+    c.cmx = {};
+    Object.keys(m).forEach(col => { if (col !== "comments") c.cmx[col] = cmFromRows(m[col]); });
+  });
 }
-async function cloudAddComment(cueId, kind, text) {
-  const { error } = await sb.from("comments").insert({ project_id: cloud.project.id, cue_id: cueId, kind, text: text || "", author: cloud.user.id, author_name: cloud.profile.username });
+async function cloudAddComment(cueId, kind, text, col) {
+  const { error } = await sb.from("comments").insert({ project_id: cloud.project.id, cue_id: cueId, col: col || "comments", kind, text: text || "", author: cloud.user.id, author_name: cloud.profile.username });
   if (error) { toast("Kunde inte spara kommentar: " + error.message); return; }
   await reloadComments(); render(); renderCmThread();
 }
@@ -5679,8 +5703,8 @@ async function cloudMoveComments(fromId, toId) {
   if (error) { toast("Kunde inte flytta kommentarer: " + error.message); return; }
   await reloadComments();
 }
-async function cloudResetComments(cueId) {
-  const { error } = await sb.from("comments").delete().eq("project_id", cloud.project.id).eq("cue_id", cueId);
+async function cloudResetComments(cueId, col) {
+  const { error } = await sb.from("comments").delete().eq("project_id", cloud.project.id).eq("cue_id", cueId).eq("col", col || "comments");
   if (error) { toast("Kunde inte återställa: " + error.message); return; }
   await reloadComments(); render();
 }
