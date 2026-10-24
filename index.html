@@ -173,6 +173,8 @@ const SUPA = {
   td.col-text[data-col="filename"] { min-width: 170px; }
   /* Musik IN/UT och Beskrivning: smalare, hela texten visas som tooltip vid hover */
   td.col-text[data-col="desc"], td.col-text[data-col="musin"], td.col-text[data-col="musout"] { min-width: 110px; }
+  td.col-text[data-col="filmcut"] { min-width: 70px; width: 80px; }
+  td.col-sel[data-col="assign"] { min-width: 100px; width: 110px; }
   td.col-text input { text-overflow: ellipsis; }
 
   /* Egen, tydlig tooltip för avklippt text */
@@ -886,7 +888,8 @@ const DEFAULT_COLUMNS = [
   { id: "compstat", label: "Composer Status", type: "select", group: 1,
     options: ["OK", "Pending", "Not OK"] },
   { id: "filename", label: "File Name",       type: "text",   group: 1 },
-  { id: "tc",       label: "TC",              type: "tc",     group: 1 },
+  { id: "tc",       label: "TC IN",           type: "tc",     group: 1 },
+  { id: "tcout",    label: "TC OUT",          type: "tc",     group: 1 },
   { id: "filmcut",  label: "Film Cut",        type: "text",   group: 1 },
   { id: "assign",   label: "Assign",          type: "assign", group: 1 },
   { id: "diegetic", label: "Diegetisk",       type: "check",  group: 1, tint: true },
@@ -965,8 +968,7 @@ const PRESETS = {
   ],
   film: [
     { id: "scene",    label: "Scen",           type: "short",  group: 1, hint: "scennummer från manus" },
-    { id: "tcout",    label: "TC ut",          type: "tc",     group: 1 },
-    { id: "dur",      label: "Längd",          type: "dur",    group: 1, hint: "räknas ut från TC/TC ut" },
+    { id: "dur",      label: "Längd",          type: "dur",    group: 1, hint: "räknas ut från TC IN/TC OUT" },
     { id: "deadline", label: "Deadline",       type: "date",   group: 1 },
     { id: "updated",  label: "Senast ändrad",  type: "ts",     group: 0 },
   ]
@@ -986,13 +988,23 @@ function addPreset(id) {
   toast(`Kolumn tillagd: ${col.label}`);
 }
 
-const TPL_VERSION = 6;
+const TPL_VERSION = 7;
 // Uppdatera redan sparade ark när en mall justeras
 function migrateTemplate(s) {
   if ((s.tplVer || 1) >= TPL_VERSION) return;
   if (s.template === "film" && (s.tplVer || 1) < 4 && !s.columns.some(c => c.id === "diegetic")) {
     const ci = s.columns.findIndex(c => c.id === "comments");
     s.columns.splice(ci >= 0 ? ci : s.columns.length, 0, { id: "diegetic", label: "Diegetisk", type: "check", group: 1, tint: true });
+  }
+  // v7 (film): TC → TC IN, TC OUT direkt till höger (läses in automatiskt från AAF/EDL/XML/auto-detekt)
+  if (s.template === "film" && (s.tplVer || 1) < 7) {
+    const tc = s.columns.find(c => c.id === "tc");
+    if (tc && tc.label === "TC") tc.label = "TC IN";
+    let out = s.columns.find(c => c.id === "tcout");
+    if (out) { s.columns.splice(s.columns.indexOf(out), 1); if (out.label === "TC ut") out.label = "TC OUT"; }
+    else out = { id: "tcout", label: "TC OUT", type: "tc", group: 1 };
+    const ti = s.columns.findIndex(c => c.id === "tc");
+    s.columns.splice(ti >= 0 ? ti + 1 : s.columns.length, 0, out);
   }
   if (s.template === "teater") {
     const col = id => s.columns.find(c => c.id === id);
