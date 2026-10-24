@@ -571,6 +571,34 @@ const SUPA = {
 </div>
 <div id="print-area"></div>
 
+<!-- Flytta alla TC -->
+<div id="shift-overlay" class="overlay" onmousedown="shiftDown=(event.target===this)" onmouseup="if(shiftDown&&event.target===this)closeShiftTc();shiftDown=false">
+  <div class="cm-box" role="dialog" aria-modal="true" style="max-width:520px">
+    <div class="cm-head"><b>Flytta alla TC</b><span class="cm-sub" id="shift-sub"></span></div>
+    <div style="padding:14px 18px;line-height:1.5">
+      <div class="col-hint" style="padding:0;margin:0 0 10px">Alla tidkodfält (TC, TC ut, extra filer) på alla cuer flyttas lika mycket. Skriv ett värde eller stega med knapparna – piltangenter upp/ned i fältet stegar bildrutor, med shift sekunder.</div>
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+        <button id="shift-sign" onclick="shiftSign=-shiftSign;shiftPreview()" title="Riktning" style="min-width:44px;font-size:18px">+</button>
+        <input id="shift-tc" class="tc" value="00:00:00:00" style="width:140px;font-size:18px;text-align:center" oninput="shiftPreview()" onkeydown="shiftKey(event)" onwheel="shiftWheel(event)">
+        <span style="color:var(--muted)">hh:mm:ss:ff</span>
+      </div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:10px">
+        <button class="icon" onclick="shiftStep(-1)">−1 bild</button><button class="icon" onclick="shiftStep(1)">+1 bild</button>
+        <button class="icon" onclick="shiftStep(-fps())">−1 s</button><button class="icon" onclick="shiftStep(fps())">+1 s</button>
+        <button class="icon" onclick="shiftStep(-10*fps())">−10 s</button><button class="icon" onclick="shiftStep(10*fps())">+10 s</button>
+        <button class="icon" onclick="shiftStep(-60*fps())">−1 min</button><button class="icon" onclick="shiftStep(60*fps())">+1 min</button>
+      </div>
+      <div id="shift-preview" style="margin-top:12px;font-family:'SF Mono',Menlo,monospace;font-size:13px;color:var(--muted)"></div>
+      <label class="inline-check" id="shift-tl-wrap" style="margin-top:10px;display:none;font-size:13px;color:var(--text)"><input type="checkbox" id="shift-tl" checked><span>Flytta tidslinjen (AAF) lika mycket</span></label>
+    </div>
+    <div class="cm-foot">
+      <button class="primary" onclick="applyShiftTc()">Flytta</button>
+      <div class="spacer"></div>
+      <button onclick="closeShiftTc()">Avbryt</button>
+    </div>
+  </div>
+</div>
+
 <!-- SongSpot: förklaring innan webbläsarens mapp-dialog -->
 <div id="scan-overlay" class="overlay" onmousedown="scanDown=(event.target===this)" onmouseup="if(scanDown&&event.target===this)closeScanInfo();scanDown=false">
   <div class="cm-box" role="dialog" aria-modal="true" style="max-width:560px">
@@ -818,6 +846,7 @@ const SUPA = {
   <button class="admin-only" onclick="document.getElementById('edl-in').click()">Importera EDL/XML/AAF…</button>
   <input type="file" id="edl-in" accept=".edl,.xml,.txt,.aaf" style="display:none" onchange="importEdlXml(event)">
   <button id="col-btn" class="admin-only" onclick="toggleCols()">Kolumner…</button>
+  <button class="admin-only" onclick="openShiftTc()" title="Flytta alla tidkoder lika mycket framåt eller bakåt (t.ex. om klipparens start-TC var fel)">Flytta alla TC…</button>
   <button class="admin-only danger" onclick="clearCues()">Rensa cuer</button>
   <div class="spacer"></div>
   <div class="totals" id="totals"></div>
@@ -1418,6 +1447,65 @@ function noChanged(i, el) {
   snapshot("före omnumrering", true);
   plan.forEach(p => { p.c.f.no = p.to; });
   render(); toast(`${plan.length} cuer omnumrerade`);
+}
+
+// ---------- Flytta alla TC lika mycket ----------
+let shiftDown = false, shiftSign = 1;
+function openShiftTc() {
+  if (!isAdmin()) return;
+  if (!state.cues.length) { toast("Inga cuer att flytta"); return; }
+  shiftSign = 1; document.getElementById("shift-tc").value = "00:00:00:00";
+  document.getElementById("shift-sub").textContent = `${state.cues.length} cuer · ${fps()} fps`;
+  document.getElementById("shift-tl-wrap").style.display = state.timeline && state.timeline.clips && state.timeline.clips.length ? "inline-flex" : "none";
+  shiftPreview();
+  document.getElementById("shift-overlay").classList.add("open");
+  setTimeout(() => document.getElementById("shift-tc").select(), 30);
+}
+function closeShiftTc() { document.getElementById("shift-overlay").classList.remove("open"); }
+function shiftFrames() { const f = parseTC(document.getElementById("shift-tc").value); return f == null ? null : f * shiftSign; }
+function shiftStep(d) {
+  let f = shiftFrames(); if (f == null) f = 0;
+  f += d; shiftSign = f < 0 ? -1 : 1;
+  document.getElementById("shift-tc").value = fmtTC(Math.abs(f)); shiftPreview();
+}
+function shiftKey(ev) {
+  if (ev.key === "ArrowUp") { ev.preventDefault(); shiftStep(ev.shiftKey ? fps() : 1); }
+  else if (ev.key === "ArrowDown") { ev.preventDefault(); shiftStep(ev.shiftKey ? -fps() : -1); }
+  else if (ev.key === "Enter") { ev.preventDefault(); applyShiftTc(); }
+}
+function shiftWheel(ev) { ev.preventDefault(); shiftStep((ev.deltaY < 0 ? 1 : -1) * (ev.shiftKey ? fps() : 1)); }
+function shiftPreview() {
+  const f = shiftFrames(), el = document.getElementById("shift-preview");
+  document.getElementById("shift-sign").textContent = shiftSign < 0 ? "−" : "+";
+  if (f == null) { el.innerHTML = `<span style="color:#d9534f">Ogiltig tidkod</span>`; return; }
+  const ex = state.cues.filter(c => c.f && parseTC(c.f.tc || "") != null).slice(0, 3);
+  el.innerHTML = (f === 0 ? "Ingen förflyttning." : (f > 0 ? "Framåt " : "Bakåt ") + fmtTC(Math.abs(f)) + ` (${Math.abs(f)} bildrutor)`) +
+    (ex.length ? "<br>" + ex.map(c => `cue ${esc(c.f.no || "–")}: ${esc(c.f.tc)} → ${fmtTC(Math.max(0, parseTC(c.f.tc) + f))}`).join("<br>") + (state.cues.length > 3 ? "<br>…" : "") : "");
+}
+async function applyShiftTc() {
+  const f = shiftFrames();
+  if (f == null) { toast("Ogiltig tidkod"); return; }
+  if (f === 0) { closeShiftTc(); return; }
+  const tcCols = state.columns.filter(c => c.type === "tc").map(c => c.id);
+  const sh = v => { const p = parseTC(v || ""); return p == null ? v : fmtTC(Math.max(0, p + f)); };
+  let neg = 0; state.cues.forEach(c => { if (c.f && parseTC(c.f.tc || "") != null && parseTC(c.f.tc) + f < 0) neg++; });
+  if (neg && !confirm(`${neg} cuer skulle hamna före 00:00:00:00 och sätts till 00:00:00:00. Fortsätt?`)) return;
+  closeShiftTc();
+  snapshot("före TC-flytt " + (f > 0 ? "+" : "−") + fmtTC(Math.abs(f)), true);
+  if (cloudActive()) { try { await sb.rpc("save_version", { p_project: cloud.project.id, p_label: "före TC-flytt " + (f > 0 ? "+" : "−") + fmtTC(Math.abs(f)) }); } catch (e) {} }
+  let n = 0;
+  state.cues.forEach(c => {
+    if (!c.f) return;
+    tcCols.forEach(id => { if (c.f[id]) { c.f[id] = sh(c.f[id]); n++; } });
+    (c.sub || []).forEach(sb2 => { if (sb2.tc) sb2.tc = sh(sb2.tc); if (sb2.tcout) sb2.tcout = sh(sb2.tcout); });
+    touchTs(c);
+  });
+  if (state.timeline && document.getElementById("shift-tl").checked && document.getElementById("shift-tl-wrap").style.display !== "none") {
+    state.timeline.start = Math.max(0, state.timeline.start + f);
+  }
+  render();
+  if (tlOpen()) tlDraw();
+  toast(`${n} tidkoder flyttade ${f > 0 ? "framåt" : "bakåt"} ${fmtTC(Math.abs(f))}`);
 }
 
 // ---------- Slå ihop två cuer: dra No. på en rad och släpp på en annan ----------
