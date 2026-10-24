@@ -3168,6 +3168,7 @@ const KEY = "cuesheet-v3";
 const META_KEYS = ["prod", "ep", "cut", "datum", "fps", "team"];
 function save() {
   if (!isAdmin()) return; // Read & Comment ändrar aldrig arket
+  if (cloud.applying) return; // omritning efter en inkommande synk får aldrig skicka tillbaka arket (gammal kopia skulle skriva över kollegans ändring)
   META_KEYS.forEach(k => {
     const el = document.getElementById("m-" + k);
     if (el) state.meta[k] = el.value;
@@ -5738,9 +5739,14 @@ function onRemoteState(row) {
   const st = JSON.parse(json); st.recActive = state.recActive; st.activeView = state.activeView; st.recSel = state.recSel; st.fnMode = st.fnMode || state.fnMode;
   if (st.recSel && !(st.recordings || []).some(r => r.id === st.recSel.id)) st.recSel = st.recordings && st.recordings.length ? { id: st.recordings[0].id, view: "list" } : null;
   const open = document.getElementById("cm-overlay").classList.contains("open");
-  applyStateQuiet(st);
-  cloud.lastSent = json;
-  render(); if (open) renderCmThread();
+  cloud.applying = true;
+  try {
+    applyStateQuiet(st);
+    // lastSent i VÅR nyckelordning (servern ordnar om jsonb-nycklar) – annars skulle nästa save() se "ny" data och skicka tillbaka samma ark
+    cloud.lastSent = JSON.stringify(stripForCloud(state));
+    (cloud.sent = cloud.sent || []).push(json);
+    render(); if (open) renderCmThread();
+  } finally { cloud.applying = false; }
   cstatus("uppdaterad " + new Date().toLocaleTimeString("sv-SE"));
 }
 function applyStateQuiet(data) {
