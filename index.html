@@ -3040,6 +3040,7 @@ function fpHashes(peaks) {
 
 // ---------- SongSpot: skanna diskar, identifiera okända klipp ----------
 const ARCH_DB = "cuesheet-fp-archive", ARCH_EXT = /\.(wav|aif|aiff|aifc|mp3|flac|m4a|ogg)$/i;
+const ARCH_PROMPT = "Namn på mappen i arkivet, t.ex. Gengångare/Skisser eller Jobbmapp/Ambienser.\n\nOBS: Skannar du samma mapp igen senare – använd exakt samma namn, annars hamnar filerna som en ny mapp och dubbleras.";
 
 function archStatus(m) { document.getElementById("arch-status").textContent = m; }
 function toggleArchive() {
@@ -3119,7 +3120,7 @@ async function pickArchiveDir() {
   if (window.showDirectoryPicker) {
     try {
       const dir = await showDirectoryPicker();
-      const label = (prompt("Namn på mappen i arkivet (t.ex. Gengångare/Skisser eller Jobbmapp/Ambienser):", dir.name) || "").trim();
+      const label = (prompt(ARCH_PROMPT, dir.name) || "").trim();
       if (!label) return;
       archStatus("Letar ljudfiler …");
       const files = [];
@@ -3153,7 +3154,7 @@ async function collectAudioFiles(dirHandle, path, out) {
 async function archiveScanPicked(files) {
   const first = [...files].find(f => f.webkitRelativePath);
   const base = first ? first.webkitRelativePath.split("/")[0] : "Mapp";
-  const label = (prompt("Namn på mappen i arkivet (t.ex. Gengångare/Skisser eller Jobbmapp/Ambienser):", base) || "").trim();
+  const label = (prompt(ARCH_PROMPT, base) || "").trim();
   if (!label) { document.getElementById("arch-dir-in").value = ""; return; }
   [...files].forEach(f => { f._relPath = label + "/" + (f.webkitRelativePath || f.name).split("/").slice(1).join("/"); });
   await archiveScan(files, label);
