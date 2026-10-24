@@ -3478,17 +3478,34 @@ async function archiveIdentify() {
   } catch (e) { archStatus("Fel: " + (e.message || e)); }
 }
 
-function renderArchResults(results) {
+// Träfflista: styrka i procent av bästa träffen, färg från klart grönt (säker) ned mot orange (svag).
+// Under 20 % döljs bakom "visa svaga träffar".
+let archLastResults = [], archShowWeak = false;
+function archColor(pct) { // 100 % → grön (hue 135), 20 % → orange (hue 30)
+  const t = Math.max(0, Math.min(1, (pct - 20) / 80)), hue = 30 + t * 105;
+  return `hsl(${hue.toFixed(0)} 62% ${(46 + t * 8).toFixed(0)}%)`;
+}
+function renderArchResults(results, keepToggle) {
+  if (!keepToggle) { archLastResults = results; archShowWeak = false; }
   const el = document.getElementById("arch-results");
   if (!results.length) { el.innerHTML = ""; return; }
-  el.innerHTML = `<table class="det-table">
-    <thead><tr><th>Ursprungsfil</th><th>Sökvägen</th><th>Klippet börjar</th><th>Styrka</th></tr></thead><tbody>` +
-    results.map(r => `<tr>
-      <td>${esc(r.name)}</td>
+  const best = results[0].score || 1;
+  const rows = results.map(r => ({ ...r, pct: Math.round(r.score / best * 100) }));
+  const strong = rows.filter(r => r.pct >= 20), weak = rows.filter(r => r.pct < 20);
+  const label = p => p >= 60 ? "stark" : p >= 20 ? "möjlig" : "svag";
+  const row = r => `<tr style="${r.pct < 20 ? "opacity:.7" : ""}">
+      <td><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${archColor(r.pct)};margin-right:8px;vertical-align:middle"></span>${esc(r.name)}</td>
       <td style="color:var(--muted);font-size:12px">${r.path.startsWith("shared:") ? `<span style="color:var(--accent)">delad</span> av ${esc(r.by || "okänd")}${r.folder ? " · " + esc(r.folder) : ""}${r.proj ? " · " + esc(r.proj) : ""}` : esc(r.path)}</td>
       <td class="mono">${fmtSec(r.pos)} in i originalet (${fmtSec(r.dur)} långt)</td>
-      <td class="mono">${r.score}</td>
-    </tr>`).join("") + `</tbody></table>`;
+      <td class="mono" style="white-space:nowrap"><span style="display:inline-block;min-width:44px;text-align:right;color:${archColor(r.pct)};font-weight:600">${r.pct} %</span> <span style="color:${archColor(r.pct)}">${label(r.pct)}</span> <span style="color:var(--muted);font-size:11px">(${r.score})</span></td>
+    </tr>`;
+  el.innerHTML = `<table class="det-table">
+    <thead><tr><th>Ursprungsfil</th><th>Sökvägen</th><th>Klippet börjar</th><th title="Andel av bästa träffens fingerprint-par. 100 % = samma fil. Höga värden på andra filer = versioner/syskon av samma cue.">Styrka</th></tr></thead><tbody>` +
+    strong.map(row).join("") +
+    (weak.length ? (archShowWeak ? weak.map(row).join("") : "") +
+      `<tr><td colspan="4" style="text-align:center"><button class="icon" onclick="archShowWeak=!archShowWeak;renderArchResults(archLastResults,true)">${archShowWeak ? "dölj" : "visa"} ${weak.length} svaga träffar (under 20 %)</button></td></tr>` : "") +
+    `</tbody></table>
+    <div class="col-hint" style="margin-top:6px">Styrkan är andelen av bästa träffens fingerprint-par. 100 % = samma fil · 60–99 % = versioner eller syskon av samma cue · 20–60 % = delar material (loopar, samples) · under 20 % = troligen brus.</div>`;
 }
 
 async function archiveClear() {
