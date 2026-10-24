@@ -113,6 +113,9 @@ const SUPA = {
   #detect-panel { display: none; }
   #detect-panel.open { display: block; }
   #tl-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+  .dropzone { border-radius: 8px; transition: box-shadow .15s, background .15s; }
+  .dropzone.drop-hover { box-shadow: 0 0 0 2px var(--accent); background: rgba(212,168,67,.08); }
+  .dropzone input[type="file"] { cursor: copy; }
   button.panel-open, button.panel-open:hover { background: #2f6b45; border-color: #3f8a5a; color: #e4f5ea; }
   button.undo { background: #6e4a2a; border-color: #8a5d35; color: #f0d9c0; }
   button.undo:hover:not(:disabled) { background: #85593a; }
@@ -709,7 +712,7 @@ const SUPA = {
 <div class="panel" id="detect-panel">
   <label style="margin-bottom:10px">Auto-detektera cuer i ljudfil</label>
   <div class="det-grid">
-    <div><label>Ljudfil (WAV säkrast)</label><input type="file" id="audio-in" accept="audio/*,.wav,.aif,.aiff,.mp3,.flac" onchange="bwfPrefill(this.files[0])"></div>
+    <div><label>Ljudfil (WAV säkrast) – eller dra hit</label><input type="file" id="audio-in" accept="audio/*,.wav,.aif,.aiff,.mp3,.flac" onchange="bwfPrefill(this.files[0])"></div>
     <div><label>Filens start-TC</label><input id="det-offset" class="tc" value="01:00:00:00" oninput="this.classList.remove('needs-input')" title="SMPTE-positionen där bouncen börjar i Logic/Pro Tools (t.ex. 00:59:32:00). Läses automatiskt ur WAV-filen om den har en BWF-tidsstämpel."><div id="det-offset-hint"></div></div>
     <div><label>Tröskel (dBFS)</label><input id="det-thresh" type="number" value="-70" step="1"></div>
     <div><label>Min tystnad mellan cuer (s)</label><input id="det-gap" type="number" value="2" step="0.5" min="0.5"></div>
@@ -769,7 +772,7 @@ const SUPA = {
     </div>
     <div><label>Min längd (s)</label><input id="arch-min" type="number" value="3" min="0" step="1"></div>
     <div><label>Max längd (min)</label><input id="arch-max" type="number" value="20" min="1" step="1"></div>
-    <div><label>Identifiera okänd fil (även kort utklipp)</label><input type="file" id="arch-id-in" accept="audio/*,.wav,.aif,.aiff,.mp3,.flac,.m4a"></div>
+    <div><label>Identifiera okänd fil (även kort utklipp) – eller dra hit</label><input type="file" id="arch-id-in" accept="audio/*,.wav,.aif,.aiff,.mp3,.flac,.m4a"></div>
     <div style="display:flex;align-items:flex-end;gap:6px">
       <button class="primary" style="flex:1" onclick="archiveIdentify()" title="Söker i ditt eget SongSpot-arkiv (lokalt i webbläsaren, kostar inget)">Sök i arkivet</button>
       <button style="flex:1" onclick="archiveAudd()" title="Extern sökning på nätet via AudD – hittar utgiven musik (Spotify/Apple). Räknas mot potten.">Sök externt (AudD)</button>
@@ -1334,6 +1337,23 @@ function dropFileName(e, i, colId) {
 // förhindra att webbläsaren öppnar filen om man missar fältet
 document.addEventListener("dragover", e => e.preventDefault());
 document.addEventListener("drop", e => e.preventDefault());
+// Släppzoner: dra en fil till ett filfält (SongSpot "Identifiera okänd fil", Auto-detekt "Ljudfil") i stället för att leta via Välj fil
+function makeDropZone(inputId) {
+  const inp = document.getElementById(inputId); if (!inp) return;
+  const zone = inp.parentElement;
+  zone.classList.add("dropzone");
+  zone.addEventListener("dragenter", e => { e.preventDefault(); zone.classList.add("drop-hover"); });
+  zone.addEventListener("dragover", e => { e.preventDefault(); e.dataTransfer.dropEffect = "copy"; zone.classList.add("drop-hover"); });
+  zone.addEventListener("dragleave", e => { if (!zone.contains(e.relatedTarget)) zone.classList.remove("drop-hover"); });
+  zone.addEventListener("drop", e => {
+    e.preventDefault(); e.stopPropagation(); zone.classList.remove("drop-hover");
+    const files = e.dataTransfer && e.dataTransfer.files; if (!files || !files.length) return;
+    try { inp.files = files; } catch (err) { toast("Webbläsaren tillät inte släpp här – använd Välj fil"); return; }
+    inp.dispatchEvent(new Event("change", { bubbles: true }));
+    toast(`${files[0].name} vald`);
+  });
+}
+["arch-id-in", "audio-in"].forEach(makeDropZone);
 
 // Teknikerfält lagras separat i molnet (så att adminens sparning aldrig skriver över dem)
 let techVals = {}; // { cueId: { colId: value } }
