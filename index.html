@@ -5614,6 +5614,7 @@ function cloudSaveState() {
     const prev = cloud.lastSent; cloud.lastSent = json;
     (cloud.sent = cloud.sent || []).push(json); if (cloud.sent.length > 8) cloud.sent.shift();
     const ts = new Date().toISOString();
+    (cloud.sentTs = cloud.sentTs || []).push(Date.parse(ts)); if (cloud.sentTs.length > 20) cloud.sentTs.shift(); // egna sparningar känns igen på tidsstämpeln (jsonb kan ordna om nycklar)
     const { error } = await sb.from("projects").update({ state: body, name: state.meta.prod || cloud.project.name, updated_at: ts }).eq("id", cloud.project.id);
     if (error) { cloud.lastSent = prev; cstatus("kunde inte spara!"); toast("Sparfel: " + error.message); return; }
     cloud.lastSavedAt = ts; cstatus("synkad");
@@ -5623,13 +5624,16 @@ function onRemoteState(row) {
   if (!cloudActive() || !row || row.id !== cloud.project.id) return;
   const json = JSON.stringify(row.state || {});
   if (json === cloud.lastSent || (cloud.sent || []).includes(json)) return; // vårt eget eko
-  if (row.updated_at && cloud.lastSavedAt && row.updated_at <= cloud.lastSavedAt) return; // äldre än vår senaste sparning – inaktuellt
+  const rt = row.updated_at ? Date.parse(row.updated_at) : NaN;
+  if (!isNaN(rt) && (cloud.sentTs || []).includes(rt)) return; // eget eko (servern kan ha ordnat om JSON-nycklarna)
+  if (!isNaN(rt) && cloud.lastSavedAt && rt <= Date.parse(cloud.lastSavedAt)) return; // äldre än vår senaste sparning – inaktuellt
   if (isAdmin() && cloud.saveTimer) { setTimeout(() => onRemoteState(row), 900); return; } // vi har osparade ändringar på väg – låt dem gå först
   if (isAdmin() && document.activeElement && document.activeElement.tagName === "INPUT" && document.activeElement.closest("#cue-body, .meta-grid")) {
     // admin skriver just nu – vänta med att byta ut arket
     setTimeout(() => onRemoteState(row), 1500); return;
   }
-  const st = JSON.parse(json); st.recActive = state.recActive; st.activeView = state.activeView;
+  const st = JSON.parse(json); st.recActive = state.recActive; st.activeView = state.activeView; st.recSel = state.recSel; st.fnMode = st.fnMode || state.fnMode;
+  if (st.recSel && !(st.recordings || []).some(r => r.id === st.recSel.id)) st.recSel = st.recordings && st.recordings.length ? { id: st.recordings[0].id, view: "list" } : null;
   const open = document.getElementById("cm-overlay").classList.contains("open");
   applyStateQuiet(st);
   cloud.lastSent = json;
