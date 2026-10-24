@@ -532,7 +532,7 @@ const SUPA = {
   <button class="admin-only" onclick="openTemplatePicker()">Ny cue-sheet…</button>
   <button class="admin-only" onclick="document.getElementById('file-in').click()">Öppna projekt</button>
   <button onclick="exportJson()">Spara projekt (.json)</button>
-  <button class="admin-only" onclick="toggleHistory()">Historik…</button>
+  <button id="hist-btn" class="admin-only" onclick="toggleHistory()">Historik…</button>
   <button onclick="openExport()">Exportera…</button>
   <input type="file" id="file-in" accept=".json" style="display:none" onchange="importJson(event)">
   <div class="spacer"></div>
@@ -814,10 +814,10 @@ const SUPA = {
 </div>
 
 <div class="panel toolbar">
-  <button class="admin-only" onclick="toggleArchive()">SongSpot</button>
+  <button id="arch-btn" class="admin-only" onclick="toggleArchive()">SongSpot</button>
   <button class="admin-only" onclick="document.getElementById('edl-in').click()">Importera EDL/XML/AAF…</button>
   <input type="file" id="edl-in" accept=".edl,.xml,.txt,.aaf" style="display:none" onchange="importEdlXml(event)">
-  <button class="admin-only" onclick="toggleCols()">Kolumner…</button>
+  <button id="col-btn" class="admin-only" onclick="toggleCols()">Kolumner…</button>
   <button class="admin-only danger" onclick="clearCues()">Rensa cuer</button>
   <div class="spacer"></div>
   <div class="totals" id="totals"></div>
@@ -1937,9 +1937,9 @@ function closeOtherPanels(keepId) {
 }
 // knapparna blir gröna medan respektive panel är öppen (lätt att hitta "stäng" när man scrollat ner)
 function syncPanelBtns() {
-  const b1 = document.getElementById("det-btn"), b2 = document.getElementById("tl-btn");
-  if (b1) b1.classList.toggle("panel-open", document.getElementById("detect-panel").classList.contains("open"));
-  if (b2) b2.classList.toggle("panel-open", document.getElementById("tl-panel").classList.contains("open"));
+  [["det-btn", "detect-panel"], ["tl-btn", "tl-panel"], ["arch-btn", "arch-panel"], ["col-btn", "col-panel"], ["hist-btn", "hist-panel"]].forEach(([b, p]) => {
+    const el = document.getElementById(b); if (el) el.classList.toggle("panel-open", document.getElementById(p).classList.contains("open"));
+  });
 }
 
 // ---------- Kolumnhanterare ----------
@@ -1947,6 +1947,7 @@ function toggleCols() {
   const p = document.getElementById("col-panel");
   p.classList.toggle("open");
   if (p.classList.contains("open")) { closeOtherPanels("col-panel"); renderCols(); }
+  syncPanelBtns();
 }
 const TYPE_LABEL = { text: "text", short: "kort text", sec: "sekunder", date: "datum", ts: "auto-tid", dur: "längd", select: "dropdown", tc: "tidkod", no: "cue-nr", assign: "assign", check: "kryssbox", comment: "kommentar", vercheck: "versionskryss", stemcheck: "stem-kryss" };
 function setColTech(i, on) { state.columns[i].tech = !!on; render(); }
@@ -2733,6 +2734,7 @@ function toggleHistory() {
   const p = document.getElementById("hist-panel");
   p.classList.toggle("open");
   if (p.classList.contains("open")) { closeOtherPanels("hist-panel"); renderHistory(); p.scrollIntoView({ behavior: "smooth", block: "start" }); }
+  syncPanelBtns();
 }
 
 function renderHistory() {
@@ -3151,6 +3153,7 @@ function toggleArchive() {
     renderArchFolders();
     if (on) fpSyncShared(false); else document.getElementById("arch-shared-info").textContent = "";
   }
+  syncPanelBtns();
 }
 
 function idbOpen() {
