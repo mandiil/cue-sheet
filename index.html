@@ -583,7 +583,7 @@ const SUPA = {
       <div class="col-hint" style="padding:0;margin:0 0 10px">Alla tidkodfält (TC, TC ut, extra filer) på alla cuer flyttas lika mycket. Skriv ett värde eller stega med knapparna – piltangenter upp/ned i fältet stegar bildrutor, med shift sekunder.</div>
       <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
         <button id="shift-sign" onclick="shiftSign=-shiftSign;shiftPreview()" title="Riktning" style="min-width:44px;font-size:18px">+</button>
-        <input id="shift-tc" class="tc" value="00:00:00:00" style="width:140px;font-size:18px;text-align:center" oninput="shiftPreview()" onkeydown="shiftKey(event)" onwheel="shiftWheel(event)">
+        <input id="shift-tc" class="tc" value="00:00:00:00" style="width:140px;font-size:18px;text-align:center" oninput="shiftPreview()" onchange="const f=parseTC(smartTC(this.value));if(f!=null){this.value=fmtTC(f);shiftPreview()}" onkeydown="shiftKey(event)" onwheel="shiftWheel(event)">
         <span style="color:var(--muted)">hh:mm:ss:ff</span>
       </div>
       <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:10px">
@@ -747,7 +747,7 @@ const SUPA = {
   <label style="margin-bottom:10px">Auto-detektera cuer i ljudfil</label>
   <div class="det-grid">
     <div><label>Ljudfil (WAV säkrast) – eller dra hit</label><input type="file" id="audio-in" accept="audio/*,.wav,.aif,.aiff,.mp3,.flac" onchange="bwfPrefill(this.files[0]);detDirty()"></div>
-    <div><label>Filens start-TC</label><input id="det-offset" class="tc" value="01:00:00:00" oninput="this.classList.remove('needs-input');detDirty()" title="SMPTE-positionen där bouncen börjar i Logic/Pro Tools (t.ex. 00:59:32:00). Läses automatiskt ur WAV-filen om den har en BWF-tidsstämpel."><div id="det-offset-hint"></div></div>
+    <div><label>Filens start-TC</label><input id="det-offset" class="tc" value="01:00:00:00" oninput="this.classList.remove('needs-input');detDirty()" onchange="const f=parseTC(smartTC(this.value));if(f!=null)this.value=fmtTC(f)" title="SMPTE-positionen där bouncen börjar i Logic/Pro Tools (t.ex. 00:59:32:00). Läses automatiskt ur WAV-filen om den har en BWF-tidsstämpel."><div id="det-offset-hint"></div></div>
     <div><label>Tröskel (dBFS)</label><input id="det-thresh" type="number" value="-70" step="1" oninput="detDirty()"></div>
     <div><label>Min tystnad mellan cuer (s)</label><input id="det-gap" type="number" value="2" step="0.5" min="0.5" oninput="detDirty()"></div>
     <div><label>Min cue-längd (s)</label><input id="det-minlen" type="number" value="4" step="1" min="1" oninput="detDirty()"></div>
@@ -1480,7 +1480,7 @@ function openShiftTc() {
   setTimeout(() => document.getElementById("shift-tc").select(), 30);
 }
 function closeShiftTc() { document.getElementById("shift-overlay").classList.remove("open"); }
-function shiftFrames() { const f = parseTC(document.getElementById("shift-tc").value); return f == null ? null : f * shiftSign; }
+function shiftFrames() { const f = parseTC(smartTC(document.getElementById("shift-tc").value)); return f == null ? null : f * shiftSign; }
 function shiftStep(d) {
   let f = shiftFrames(); if (f == null) f = 0;
   f += d; shiftSign = f < 0 ? -1 : 1;
@@ -1749,12 +1749,18 @@ function cmFromRows(rows) {
 document.addEventListener("keydown", e => {
   if (e.key === "Escape" && document.getElementById("cm-overlay").classList.contains("open")) closeComment();
 });
-function normTC(i, colId, el) {
-  let v = el.value.trim();
+// Logic-stil inmatning: "005950" → 00:59:50:00, "5950" → 00:59:50:00, "00595012" → 00:59:50:12, punkter/mellanslag duger som skiljetecken
+function smartTC(v) {
+  v = (v || "").trim().replace(/[.;,\s]+/g, ":");
   if (/^\d+$/.test(v) && v.length <= 8) {
-    if (v.length <= 6) v = v.padStart(6, "0") + "00"; // HHMMSS → frames = 00
+    if (v.length <= 6) v = v.padStart(6, "0") + "00"; // HHMMSS → bildrutor = 00
     v = v.padStart(8, "0").replace(/(\d{2})(?=\d)/g, "$1:");
   }
+  if (/^\d{1,2}:\d{1,2}:\d{1,2}$/.test(v)) v += ":00"; // hh:mm:ss utan bildrutor
+  return v;
+}
+function normTC(i, colId, el) {
+  let v = smartTC(el.value);
   const f = parseTC(v);
   if (f != null) state.cues[i].f[colId] = fmtTC(f);
   render();
