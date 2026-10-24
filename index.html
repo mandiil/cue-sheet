@@ -739,7 +739,7 @@ const SUPA = {
   <div class="det-grid" style="grid-template-columns:2fr 1fr 1fr 2fr 1fr">
     <div><label>Skanna mapp/disk (alla undermappar fingerprintas)</label>
       <button style="width:100%" onclick="pickArchiveDir()">Välj mapp att skanna…</button>
-      <input type="file" id="arch-dir-in" webkitdirectory multiple style="display:none" onchange="archiveScan(this.files)">
+      <input type="file" id="arch-dir-in" webkitdirectory multiple style="display:none" onchange="archiveScanPicked(this.files)">
     </div>
     <div><label>Min längd (s)</label><input id="arch-min" type="number" value="3" min="0" step="1"></div>
     <div><label>Max längd (min)</label><input id="arch-max" type="number" value="20" min="1" step="1"></div>
@@ -750,18 +750,14 @@ const SUPA = {
     </div>
   </div>
   <div class="col-hint" style="margin-top:4px"><b>Sök i arkivet</b> = ditt eget fingerprint-arkiv här i webbläsaren (skisser, omdöpta filer). <b>Sök externt (AudD)</b> = tjänst på nätet som känner igen utgiven musik, t.ex. tempmusik från film och skivor – kräver inloggning, 12 s av filen skickas, och varje sökning räknas mot potten (se Konton).</div>
-  <div id="arch-share-row" style="display:none;align-items:center;gap:14px;flex-wrap:wrap;margin-top:8px;font-size:13px">
-    <span style="display:inline-flex;align-items:center;gap:6px"><input type="checkbox" id="arch-share" style="width:14px;height:14px;margin:0;flex:none"><label for="arch-share" style="display:inline;margin:0;text-transform:none;letter-spacing:0;font-size:13px;color:var(--text);cursor:pointer">Dela skanningen med produktionen <b id="arch-share-name"></b></label></span>
-    <span class="col-hint" style="margin:0;padding:0">Bara fingerprint (hash-värden) och filnamn laddas upp – aldrig ljud eller sökvägar. Synligt endast för produktionens medlemmar.</span>
-  </div>
   <div id="arch-status" class="col-hint"></div>
   <div id="arch-results"></div>
+  <div id="arch-folders" style="margin-top:12px"></div>
   <div style="display:flex;gap:8px;margin-top:10px;align-items:center;flex-wrap:wrap">
     <span id="arch-count" class="col-hint" style="margin:0"></span>
     <span id="arch-shared-info" class="col-hint" style="margin:0"></span>
     <span style="flex:1"></span>
     <button id="arch-sync-btn" style="display:none" onclick="fpSyncShared(true)" title="Hämtar produktionens delade fingerprints till den här webbläsaren">Hämta produktionens arkiv</button>
-    <button id="arch-unshare-btn" style="display:none" onclick="fpUnshareMine()" title="Tar bort de fingerprints du själv delat med produktionen">Ta bort mina delade</button>
     <button class="danger" onclick="archiveClear()">Töm arkivet</button>
   </div>
 </div>
@@ -3052,11 +3048,9 @@ function toggleArchive() {
   if (p.classList.contains("open")) {
     closeOtherPanels("arch-panel"); updateArchCount(); p.scrollIntoView({ behavior: "smooth", block: "start" });
     const on = cloudActive();
-    document.getElementById("arch-share-row").style.display = on && isAdmin() ? "flex" : "none";
     document.getElementById("arch-sync-btn").style.display = on ? "" : "none";
-    document.getElementById("arch-unshare-btn").style.display = on && isAdmin() ? "" : "none";
-    if (on) { document.getElementById("arch-share-name").textContent = cloud.project.name; fpSyncShared(false); }
-    else document.getElementById("arch-shared-info").textContent = "";
+    renderArchFolders();
+    if (on) fpSyncShared(false); else document.getElementById("arch-shared-info").textContent = "";
   }
 }
 
@@ -3125,11 +3119,13 @@ async function pickArchiveDir() {
   if (window.showDirectoryPicker) {
     try {
       const dir = await showDirectoryPicker();
+      const label = (prompt("Namn på mappen i arkivet (t.ex. Gengångare/Skisser eller Jobbmapp/Ambienser):", dir.name) || "").trim();
+      if (!label) return;
       archStatus("Letar ljudfiler …");
       const files = [];
-      await collectAudioFiles(dir, dir.name, files);
+      await collectAudioFiles(dir, label, files);
       if (!files.length) { archStatus("Inga ljudfiler hittades i mappen"); return; }
-      await archiveScan(files);
+      await archiveScan(files, label);
     } catch (e) {
       if (e.name !== "AbortError") archStatus("Fel: " + (e.message || e));
     }
@@ -3153,9 +3149,19 @@ async function collectAudioFiles(dirHandle, path, out) {
   }
 }
 
-async function archiveScan(files) {
+// fallback-väljaren (webkitdirectory): mappnamnet = första delen av sökvägen, men man får döpa om
+async function archiveScanPicked(files) {
+  const first = [...files].find(f => f.webkitRelativePath);
+  const base = first ? first.webkitRelativePath.split("/")[0] : "Mapp";
+  const label = (prompt("Namn på mappen i arkivet (t.ex. Gengångare/Skisser eller Jobbmapp/Ambienser):", base) || "").trim();
+  if (!label) { document.getElementById("arch-dir-in").value = ""; return; }
+  [...files].forEach(f => { f._relPath = label + "/" + (f.webkitRelativePath || f.name).split("/").slice(1).join("/"); });
+  await archiveScan(files, label);
+}
+async function archiveScan(files, folder) {
   const audio = [...files].filter(f => ARCH_EXT.test(f.name));
   if (!audio.length) { archStatus("Inga ljudfiler hittades i mappen"); return; }
+  folder = folder || "Mapp";
   let done = 0, skipped = 0, failed = 0, filtered = 0;
   const failNames = [];
   const minS = parseFloat(document.getElementById("arch-min").value) || 0;
@@ -3165,10 +3171,9 @@ async function archiveScan(files) {
     try {
       // snabbfilter: för små filer kan inte nå min-längden (ens hårt komprimerade)
       if (file.size < minS * 8000) { filtered++; done++; continue; }
-      const share = cloudActive() && isAdmin() && document.getElementById("arch-share").checked;
       const existing = await idbGetTrack(path);
       if (existing && existing.size === file.size && existing.mtime === file.lastModified) {
-        if (share && !existing.shared) { archStatus(`Delar ${done + 1}/${audio.length}: ${file.name}`); await fpShareTrack(existing); }
+        if (existing.folder !== folder) { existing.folder = folder; await idbPutTrack(existing); }
         skipped++; done++;
         continue;
       }
@@ -3180,9 +3185,8 @@ async function archiveScan(files) {
       const pairs = fpHashes(peaks);
       const flat = new Int32Array(pairs.length * 2);
       pairs.forEach(([h, t], i) => { flat[i * 2] = h; flat[i * 2 + 1] = t; });
-      const rec = { path, name: file.name.replace(/\.[^.]+$/, ""), size: file.size, mtime: file.lastModified, dur: samples.length / sr, sr, hashes: flat };
+      const rec = { path, folder, name: file.name.replace(/\.[^.]+$/, ""), size: file.size, mtime: file.lastModified, dur: samples.length / sr, sr, hashes: flat };
       await idbPutTrack(rec);
-      if (share) { archStatus(`Delar ${done + 1}/${audio.length}: ${file.name}`); await fpShareTrack(rec); }
       done++;
     } catch (e) {
       failed++; done++;
@@ -3198,10 +3202,75 @@ async function archiveScan(files) {
   archStatus(`Klart: ${done - skipped - failed - filtered} nya fingerprintade, ${skipped} redan i arkivet` +
     (filtered ? `, ${filtered} utanför längdgränserna` : "") +
     (failed ? `, ${failed} kunde inte läsas (t.ex. ${failNames.join(", ")})` : ""));
-  updateArchCount();
+  updateArchCount(); renderArchFolders();
   document.getElementById("arch-dir-in").value = "";
-  if (cloudActive()) fpSharedInfo();
   if (detected.length && detFile) detIdentify(true); // uppdatera Innehåll-kolumnen direkt
+}
+
+// mappens namn för en lokal post (äldre poster: första delen av sökvägen)
+function recFolder(t) { return t.folder || (t.path.includes("/") ? t.path.split("/")[0] : "Övrigt"); }
+// Mapplista: egna mappar (med delning per produktion) + delade mappar från produktionen
+async function renderArchFolders() {
+  const el = document.getElementById("arch-folders");
+  const own = new Map(), shared = new Map();
+  const pid = cloudActive() ? cloud.project.id : null;
+  try {
+    await idbEachTrack(t => {
+      if (t.path.startsWith("shared:")) {
+        const k = (t.proj || "?") + "|" + (t.by || "?") + "|" + (t.folder || "");
+        const e = shared.get(k) || { proj: t.proj, by: t.by, folder: t.folder, n: 0, mine: !!t.mine }; e.n++; shared.set(k, e);
+      } else {
+        const f = recFolder(t), e = own.get(f) || { folder: f, n: 0, sharedHere: 0 };
+        e.n++; if (pid && t.sharedIn && t.sharedIn[pid]) e.sharedHere++; own.set(f, e);
+      }
+    });
+  } catch (e) { el.innerHTML = ""; return; }
+  if (!own.size && !shared.size) { el.innerHTML = ""; return; }
+  const canShare = !!pid && isAdmin(), pname = pid ? esc(cloud.project.name) : "";
+  let h = `<table class="det-table"><thead><tr><th>Mapp i arkivet</th><th>Filer</th><th>${pid ? "Delning med " + pname : "Delning"}</th><th></th></tr></thead><tbody>`;
+  [...own.values()].sort((a, b) => a.folder.localeCompare(b.folder)).forEach(e => {
+    const all = e.sharedHere >= e.n, some = e.sharedHere > 0;
+    h += `<tr><td><b>${esc(e.folder)}</b> <span style="color:var(--muted);font-size:12px">lokal · alla produktioner</span></td><td class="mono">${e.n}</td>
+      <td>${!pid ? `<span style="color:var(--muted)">öppna en produktion för att dela</span>`
+          : all ? `<span style="color:#7fc99a">delad med ${pname} ✓</span>` : some ? `<span style="color:var(--accent)">${e.sharedHere} av ${e.n} delade</span>` : `<span style="color:var(--muted)">inte delad</span>`}</td>
+      <td style="white-space:nowrap">
+        ${canShare && !all ? `<button class="icon" onclick="fpShareFolder(${JSON.stringify(e.folder).replace(/"/g, "&quot;")})" title="Laddar upp mappens fingerprints (inte ljud, inte sökvägar) så att ${pname}s medlemmar kan söka i dem">Dela med ${pname}</button>` : ""}
+        ${canShare && some ? `<button class="icon" onclick="fpUnshareFolder(${JSON.stringify(e.folder).replace(/"/g, "&quot;")})" title="Tar bort mappens fingerprints från ${pname}">Sluta dela</button>` : ""}
+        <button class="icon del" onclick="archiveRemoveFolder(${JSON.stringify(e.folder).replace(/"/g, "&quot;")})" title="Tar bort mappen ur ditt lokala arkiv (ljudfilerna påverkas inte)">✕</button>
+      </td></tr>`;
+  });
+  [...shared.values()].sort((a, b) => (a.proj + a.by).localeCompare(b.proj + b.by)).forEach(e => {
+    h += `<tr><td>${esc(e.folder || "(utan mappnamn)")} <span style="color:var(--accent);font-size:12px">delad av ${esc(e.by || "okänd")} · ${esc(e.proj || "")}</span></td><td class="mono">${e.n}</td><td><span style="color:var(--muted)">hämtad från produktionen</span></td><td></td></tr>`;
+  });
+  el.innerHTML = h + "</tbody></table>";
+}
+async function archiveRemoveFolder(folder) {
+  const keys = []; await idbEachTrack(t => { if (!t.path.startsWith("shared:") && recFolder(t) === folder) keys.push(t.path); });
+  if (!keys.length) return;
+  if (!confirm(`Ta bort mappen "${folder}" (${keys.length} filer) ur ditt lokala arkiv? Delade kopior i produktioner påverkas inte.`)) return;
+  const db = await idbOpen(); await new Promise(res => { const tx = db.transaction("tracks", "readwrite"); keys.forEach(k => tx.objectStore("tracks").delete(k)); tx.oncomplete = () => { db.close(); res(); }; });
+  updateArchCount(); renderArchFolders(); archStatus(`Mappen "${folder}" borttagen ur arkivet`);
+}
+async function fpShareFolder(folder) {
+  if (!cloudActive() || !isAdmin()) return;
+  const pid = cloud.project.id, recs = []; await idbEachTrack(t => { if (!t.path.startsWith("shared:") && recFolder(t) === folder && !(t.sharedIn && t.sharedIn[pid])) recs.push(t); });
+  if (!recs.length) return;
+  let n = 0;
+  for (const r of recs) { archStatus(`Delar ${folder} med ${cloud.project.name} … ${n + 1}/${recs.length}: ${r.name}`); await fpShareTrack(r, folder); n++; }
+  archStatus(`${folder}: ${n} filer delade med ${cloud.project.name}`);
+  renderArchFolders(); fpSharedInfo();
+}
+async function fpUnshareFolder(folder) {
+  if (!cloudActive() || !isAdmin()) return;
+  const pid = cloud.project.id, recs = []; await idbEachTrack(t => { if (!t.path.startsWith("shared:") && recFolder(t) === folder && t.sharedIn && t.sharedIn[pid]) recs.push(t); });
+  if (!recs.length) return;
+  if (!confirm(`Sluta dela "${folder}" (${recs.length} filer) med ${cloud.project.name}? Ditt lokala arkiv påverkas inte.`)) return;
+  const ids = recs.map(r => r.sharedIn[pid]), paths = ids.map(id => `${pid}/${id}.bin`);
+  for (let i = 0; i < paths.length; i += 100) await sb.storage.from("fingerprints").remove(paths.slice(i, i + 100));
+  for (let i = 0; i < ids.length; i += 200) await sb.from("fp_tracks").delete().in("id", ids.slice(i, i + 200));
+  for (const r of recs) { delete r.sharedIn[pid]; await idbPutTrack(r); }
+  archStatus(`${folder}: delningen med ${cloud.project.name} borttagen`);
+  await fpSyncShared(false); renderArchFolders();
 }
 
 // ---------- Delat SongSpot-arkiv per produktion (Supabase: tabell fp_tracks + Storage-bucket fingerprints) ----------
@@ -3226,22 +3295,22 @@ async function fpUnpack(bytes) {
   for (let i = 0; i < n; i++) { flat[i * 2] = D.getUint32(8 + i * 4, true); flat[i * 2 + 1] = D.getUint16(8 + n * 4 + i * 2, true); }
   return flat;
 }
-async function fpShareTrack(rec) {
+async function fpShareTrack(rec, folder) {
   if (!cloudActive() || !isAdmin()) return;
   try {
     const id = (crypto.randomUUID ? crypto.randomUUID() : newId()), pid = cloud.project.id;
     const packed = await fpPack(rec.hashes);
     const { error: e1 } = await sb.storage.from("fingerprints").upload(`${pid}/${id}.bin`, new Blob([packed], { type: "application/octet-stream" }), { upsert: true });
     if (e1) throw e1;
-    const { error: e2 } = await sb.from("fp_tracks").insert({ id, project_id: pid, user_id: cloud.user.id, name: rec.name, dur: rec.dur, sr: rec.sr, n: rec.hashes.length / 2, bytes: packed.length });
+    const { error: e2 } = await sb.from("fp_tracks").insert({ id, project_id: pid, user_id: cloud.user.id, name: rec.name, folder: folder || recFolder(rec), dur: rec.dur, sr: rec.sr, n: rec.hashes.length / 2, bytes: packed.length });
     if (e2) throw e2;
-    rec.shared = id; await idbPutTrack(rec);
+    (rec.sharedIn = rec.sharedIn || {})[pid] = id; await idbPutTrack(rec);
   } catch (e) { console.warn("dela fingerprint", rec.name, e); toast("Kunde inte dela " + rec.name + ": " + (e.message || e)); }
 }
 function fmtMB(b) { return b >= 1048576 ? (b / 1048576).toFixed(1) + " MB" : Math.round(b / 1024) + " kB"; }
 async function fpSharedInfo() {
   if (!cloudActive()) return [];
-  const { data, error } = await sb.from("fp_tracks").select("id,user_id,name,dur,sr,n,bytes").eq("project_id", cloud.project.id);
+  const { data, error } = await sb.from("fp_tracks").select("id,user_id,name,folder,dur,sr,n,bytes").eq("project_id", cloud.project.id);
   if (error) { document.getElementById("arch-shared-info").textContent = "Delat arkiv: " + error.message; return []; }
   const rows = data || [], bytes = rows.reduce((a, r) => a + (r.bytes || 0), 0);
   document.getElementById("arch-shared-info").textContent = rows.length ? `· produktionen delar ${rows.length} filer (${fmtMB(bytes)})` : "· produktionen har inget delat arkiv ännu";
@@ -3250,7 +3319,7 @@ async function fpSharedInfo() {
 // hämtar produktionens delade fingerprints till lokala IndexedDB (nyckel "shared:<id>"), tar bort sådana som försvunnit
 async function fpSyncShared(verbose) {
   if (!cloudActive()) return;
-  const rows = await fpSharedInfo();
+  const rows = (await fpSharedInfo()).filter(r => r.user_id !== cloud.user.id); // egna delningar finns redan i det lokala arkivet
   const want = new Map(rows.map(r => [r.id, r]));
   const have = new Set(); const stale = [];
   await idbEachTrack(t => { if (t.path.startsWith("shared:")) { const id = t.path.slice(7); if (want.has(id)) have.add(id); else stale.push(t.path); } });
@@ -3265,28 +3334,13 @@ async function fpSyncShared(verbose) {
       const { data, error } = await sb.storage.from("fingerprints").download(`${cloud.project.id}/${r.id}.bin`);
       if (error) throw error;
       const flat = await fpUnpack(new Uint8Array(await data.arrayBuffer()));
-      await idbPutTrack({ path: "shared:" + r.id, name: r.name, size: 0, mtime: 0, dur: r.dur, sr: r.sr, hashes: flat, shared: r.id, by: names[r.user_id] || "", proj: cloud.project.name, mine: r.user_id === cloud.user.id });
+      await idbPutTrack({ path: "shared:" + r.id, name: r.name, folder: r.folder || "", size: 0, mtime: 0, dur: r.dur, sr: r.sr, hashes: flat, shared: r.id, by: names[r.user_id] || "", proj: cloud.project.name });
       got++;
     } catch (e) { console.warn("hämta fingerprint", r.name, e); }
   }
   if (stale.length) { const db = await idbOpen(); await new Promise(res => { const tx = db.transaction("tracks", "readwrite"); stale.forEach(k => tx.objectStore("tracks").delete(k)); tx.oncomplete = () => { db.close(); res(); }; }); }
   archStatus(`Produktionens arkiv: ${got} nya hämtade` + (stale.length ? `, ${stale.length} borttagna` : ""));
-  updateArchCount();
-}
-async function fpUnshareMine() {
-  if (!cloudActive()) return;
-  const { data } = await sb.from("fp_tracks").select("id").eq("project_id", cloud.project.id).eq("user_id", cloud.user.id);
-  const mine = data || [];
-  if (!mine.length) { toast("Du har inte delat något i den här produktionen"); return; }
-  if (!confirm(`Ta bort dina ${mine.length} delade fingerprints från produktionen? Ditt lokala arkiv påverkas inte.`)) return;
-  const paths = mine.map(r => `${cloud.project.id}/${r.id}.bin`);
-  for (let i = 0; i < paths.length; i += 100) await sb.storage.from("fingerprints").remove(paths.slice(i, i + 100));
-  await sb.from("fp_tracks").delete().eq("project_id", cloud.project.id).eq("user_id", cloud.user.id);
-  const ids = new Set(mine.map(r => r.id));
-  const fix = []; await idbEachTrack(t => { if (t.shared && ids.has(t.shared) && !t.path.startsWith("shared:")) fix.push(t); });
-  for (const t of fix) { delete t.shared; await idbPutTrack(t); }
-  await fpSyncShared(false);
-  toast(`${mine.length} delade fingerprints borttagna`);
+  updateArchCount(); renderArchFolders();
 }
 
 async function archiveIdentify() {
@@ -3331,7 +3385,7 @@ async function archiveIdentify() {
         const c = e[0] + n[0];
         if (c >= thr && (!best || c > best.c)) best = { c, pos: (e[1] + n[1]) / c };
       }
-      if (best) results.push({ name: track.name, path: track.path, by: track.by, proj: track.proj, pos: Math.max(0, best.pos), dur: track.dur, score: best.c });
+      if (best) results.push({ name: track.name, path: track.path, by: track.by, proj: track.proj, folder: track.folder, pos: Math.max(0, best.pos), dur: track.dur, score: best.c });
     });
     results.sort((a, b) => b.score - a.score);
     archStatus(`${file.name} → ` + (results.length
@@ -3349,7 +3403,7 @@ function renderArchResults(results) {
     <thead><tr><th>Ursprungsfil</th><th>Sökvägen</th><th>Klippet börjar</th><th>Styrka</th></tr></thead><tbody>` +
     results.map(r => `<tr>
       <td>${esc(r.name)}</td>
-      <td style="color:var(--muted);font-size:12px">${r.path.startsWith("shared:") ? `<span style="color:var(--accent)">delad</span> av ${esc(r.by || "okänd")}${r.proj ? " · " + esc(r.proj) : ""}` : esc(r.path)}</td>
+      <td style="color:var(--muted);font-size:12px">${r.path.startsWith("shared:") ? `<span style="color:var(--accent)">delad</span> av ${esc(r.by || "okänd")}${r.folder ? " · " + esc(r.folder) : ""}${r.proj ? " · " + esc(r.proj) : ""}` : esc(r.path)}</td>
       <td class="mono">${fmtSec(r.pos)} in i originalet (${fmtSec(r.dur)} långt)</td>
       <td class="mono">${r.score}</td>
     </tr>`).join("") + `</tbody></table>`;
@@ -3360,7 +3414,7 @@ async function archiveClear() {
   if (!n) { toast("Arkivet är redan tomt"); return; }
   if (!confirm(`Är du säker? Detta tar bort alla ${n} fingerprints ur arkivet. (Ljudfilerna påverkas inte.)`)) return;
   await idbClearTracks();
-  updateArchCount();
+  updateArchCount(); renderArchFolders();
   document.getElementById("arch-results").innerHTML = "";
   archStatus("Arkivet tömt");
 }
