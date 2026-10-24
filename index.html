@@ -113,6 +113,7 @@ const SUPA = {
   #detect-panel { display: none; }
   #detect-panel.open { display: block; }
   #tl-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+  button.panel-open, button.panel-open:hover { background: #2f6b45; border-color: #3f8a5a; color: #e4f5ea; }
   button.undo { background: #6e4a2a; border-color: #8a5d35; color: #f0d9c0; }
   button.undo:hover:not(:disabled) { background: #85593a; }
   button.undo:disabled { opacity: 0.4; cursor: not-allowed; }
@@ -763,7 +764,7 @@ const SUPA = {
   </div>
   <div style="margin: 8px 0 4px; display:flex; gap:8px; align-items:center">
     <button class="primary admin-only" onclick="addCue()">+ Lägg till cue</button>
-    <button class="admin-only" onclick="toggleDetect()">Auto-detektera cuer…</button>
+    <button id="det-btn" class="admin-only" onclick="toggleDetect()">Auto-detektera cuer…</button>
     <button id="tl-btn" onclick="toggleTimeline()" disabled title="Importera en AAF så byggs tidslinjen av musikspåren">Tidslinje AAF</button>
   </div>
   <div id="rec-area" style="display:none"></div>
@@ -1879,6 +1880,13 @@ function closeOtherPanels(keepId) {
   ["col-panel", "detect-panel", "hist-panel", "arch-panel", "tl-panel"].forEach(id => {
     if (id !== keepId) document.getElementById(id).classList.remove("open");
   });
+  syncPanelBtns();
+}
+// knapparna blir gröna medan respektive panel är öppen (lätt att hitta "stäng" när man scrollat ner)
+function syncPanelBtns() {
+  const b1 = document.getElementById("det-btn"), b2 = document.getElementById("tl-btn");
+  if (b1) b1.classList.toggle("panel-open", document.getElementById("detect-panel").classList.contains("open"));
+  if (b2) b2.classList.toggle("panel-open", document.getElementById("tl-panel").classList.contains("open"));
 }
 
 // ---------- Kolumnhanterare ----------
@@ -2076,6 +2084,7 @@ function toggleDetect() {
     closeOtherPanels("detect-panel");
     p.scrollIntoView({ behavior: "smooth", block: "start" });
   }
+  syncPanelBtns();
 }
 function detStatus(msg) { document.getElementById("det-status").textContent = msg; }
 
@@ -2539,7 +2548,7 @@ function addDetected() {
   reconcileImport(clips, "auto-detektering");
   // fäll ihop panelen och visa tabellen
   if (detAudio) detAudio.pause();
-  document.getElementById("detect-panel").classList.remove("open");
+  document.getElementById("detect-panel").classList.remove("open"); syncPanelBtns();
   document.getElementById("cue-table").scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
@@ -4035,6 +4044,7 @@ function toggleTimeline() {
     tlRestorePin();
     p.scrollIntoView({ behavior: "smooth", block: "start" });
   } else tlStop();
+  syncPanelBtns();
 }
 function tlInfo() {
   tlBtn();
@@ -4074,6 +4084,7 @@ async function tlBuild(reader, c, tracks) {
                      clips: raw.map(r => ({ name: r.name, inF: r.inF, outF: r.outF, lane: r.lane, pk: "" })) };
   tl.clips = raw; tl.sig = tlSig(); tl.pos = 0; tl.sel = -1;
   if (!tlOpen()) { document.getElementById("tl-panel").classList.add("open"); closeOtherPanels("tl-panel"); tlRestorePin(); }
+  syncPanelBtns();
   tlResize(); tlZoomAll(); tlDraw(); tlInfo();
   const gen = ++tl.gen;
   for (let i = 0; i < raw.length; i++) {
