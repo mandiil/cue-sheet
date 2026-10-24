@@ -1217,6 +1217,13 @@ function render() {
   hr.innerHTML = cols.map(c => `<th>${c.tech ? `<span class="tech-tag" title="Får ändras av ljudtekniker">tekniker</span><br>` : ""}${c.id === "filename" ? fnHeadHtml(c) : esc(c.label)}</th>`).join("") + "<th></th>";
 
   const tb = document.getElementById("cue-body");
+  // kom ihåg var markören står så att en omritning (realtidsuppdatering) inte avbryter skrivandet
+  let keep = null;
+  const ae = document.activeElement;
+  if (ae && tb.contains(ae) && (ae.tagName === "INPUT" || ae.tagName === "SELECT")) {
+    const td = ae.closest("td"), tr = ae.closest("tr");
+    keep = { tr: [...tb.children].indexOf(tr), td: [...tr.children].indexOf(td), s: ae.selectionStart, e: ae.selectionEnd, v: ae.value };
+  }
   tb.innerHTML = "";
   state.cues.forEach((cue, i) => {
     const tr = document.createElement("tr");
@@ -1322,6 +1329,10 @@ function render() {
     }
   });
   document.getElementById("empty-msg").style.display = state.cues.length ? "none" : "block";
+  if (keep) {
+    const tr = tb.children[keep.tr], td = tr && tr.children[keep.td], el = td && td.querySelector("input, select");
+    if (el) { el.focus({ preventScroll: true }); if (el.tagName === "INPUT" && el.type === "text" && keep.s != null) { if (el.value !== keep.v && !el.disabled) el.value = keep.v; try { el.setSelectionRange(keep.s, keep.e); } catch (e) {} } }
+  }
   renderTotals();
   save();
 }
@@ -5466,20 +5477,27 @@ function cloudSaveState() {
   cstatus("sparar…");
   clearTimeout(cloud.saveTimer);
   cloud.saveTimer = setTimeout(async () => {
+    cloud.saveTimer = null;
     if (!cloudActive() || !isAdmin()) return;
     const body = stripForCloud(state);
     const json = JSON.stringify(body);
     if (json === cloud.lastSent) { cstatus("synkad"); return; }
-    const { error } = await sb.from("projects").update({ state: body, name: state.meta.prod || cloud.project.name, updated_at: new Date().toISOString() }).eq("id", cloud.project.id);
-    if (error) { cstatus("kunde inte spara!"); toast("Sparfel: " + error.message); return; }
-    cloud.lastSent = json; cstatus("synkad");
+    // markera som skickat INNAN svaret kommer – realtidsekot kan hinna före och får inte tolkas som en ändring från någon annan
+    const prev = cloud.lastSent; cloud.lastSent = json;
+    (cloud.sent = cloud.sent || []).push(json); if (cloud.sent.length > 8) cloud.sent.shift();
+    const ts = new Date().toISOString();
+    const { error } = await sb.from("projects").update({ state: body, name: state.meta.prod || cloud.project.name, updated_at: ts }).eq("id", cloud.project.id);
+    if (error) { cloud.lastSent = prev; cstatus("kunde inte spara!"); toast("Sparfel: " + error.message); return; }
+    cloud.lastSavedAt = ts; cstatus("synkad");
   }, 700);
 }
 function onRemoteState(row) {
   if (!cloudActive() || !row || row.id !== cloud.project.id) return;
   const json = JSON.stringify(row.state || {});
-  if (json === cloud.lastSent) return; // vårt eget eko
-  if (isAdmin() && document.activeElement && document.activeElement.tagName === "INPUT") {
+  if (json === cloud.lastSent || (cloud.sent || []).includes(json)) return; // vårt eget eko
+  if (row.updated_at && cloud.lastSavedAt && row.updated_at <= cloud.lastSavedAt) return; // äldre än vår senaste sparning – inaktuellt
+  if (isAdmin() && cloud.saveTimer) { setTimeout(() => onRemoteState(row), 900); return; } // vi har osparade ändringar på väg – låt dem gå först
+  if (isAdmin() && document.activeElement && document.activeElement.tagName === "INPUT" && document.activeElement.closest("#cue-body, .meta-grid")) {
     // admin skriver just nu – vänta med att byta ut arket
     setTimeout(() => onRemoteState(row), 1500); return;
   }
