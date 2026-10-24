@@ -141,7 +141,11 @@ const SUPA = {
   #hist-panel.open { display: block !important; }
   #arch-panel { display: none; }
   #arch-panel.open { display: block; }
-  .det-grid { display: grid; grid-template-columns: 2fr 1fr 1fr 1fr 1fr 1fr; gap: 12px; align-items: end; }
+  .det-grid { display: grid; grid-template-columns: 2fr 1fr 1fr 1fr 1fr 1fr; gap: 12px; align-items: start; padding-bottom: 18px; }
+  .det-grid > div { position: relative; }
+  #det-offset-hint { position: absolute; left: 0; right: 0; top: 100%; font-size: 11px; color: var(--muted); margin-top: 3px; line-height: 1.25; }
+  #det-offset.needs-input { background: #1f2a3d; border-color: #3b5a8c; }
+  #det-offset.from-file { border-color: #3f8a5a; }
   @media (max-width: 1000px) { .det-grid { grid-template-columns: 1fr 1fr 1fr; } }
   #det-wave { width: 100%; height: 110px; margin-top: 14px; background: var(--panel2); border: 1px solid var(--border); border-radius: 6px; }
   .det-table { margin-top: 12px; }
@@ -680,7 +684,7 @@ const SUPA = {
   <label style="margin-bottom:10px">Auto-detektera cuer i ljudfil</label>
   <div class="det-grid">
     <div><label>Ljudfil (WAV säkrast)</label><input type="file" id="audio-in" accept="audio/*,.wav,.aif,.aiff,.mp3,.flac" onchange="bwfPrefill(this.files[0])"></div>
-    <div><label>Filens start-TC</label><input id="det-offset" class="tc" value="01:00:00:00" title="SMPTE-positionen där bouncen börjar i Logic/Pro Tools (t.ex. 00:59:32:00). Läses automatiskt ur WAV-filen om den har en BWF-tidsstämpel."><div id="det-offset-hint" style="font-size:11px;color:var(--muted);margin-top:3px"></div></div>
+    <div><label>Filens start-TC</label><input id="det-offset" class="tc" value="01:00:00:00" oninput="this.classList.remove('needs-input')" title="SMPTE-positionen där bouncen börjar i Logic/Pro Tools (t.ex. 00:59:32:00). Läses automatiskt ur WAV-filen om den har en BWF-tidsstämpel."><div id="det-offset-hint"></div></div>
     <div><label>Tröskel (dBFS)</label><input id="det-thresh" type="number" value="-70" step="1"></div>
     <div><label>Min tystnad mellan cuer (s)</label><input id="det-gap" type="number" value="2" step="0.5" min="0.5"></div>
     <div><label>Min cue-längd (s)</label><input id="det-minlen" type="number" value="4" step="1" min="1"></div>
@@ -2106,11 +2110,12 @@ async function readBwfStart(file) {
 }
 async function bwfPrefill(file) {
   const el = document.getElementById("det-offset"), hint = document.getElementById("det-offset-hint");
+  el.classList.remove("needs-input", "from-file");
   if (!file) { hint.textContent = ""; return; }
   try {
     const b = await readBwfStart(file);
-    if (b && b.seconds > 0) { el.value = fmtTC(Math.round((b.seconds % 86400) * fps())); hint.textContent = "läst ur filen (BWF-tidsstämpel)"; }
-    else hint.textContent = "ingen tidsstämpel i filen – ange var bouncen börjar (SMPTE i Logic)";
+    if (b && b.seconds > 0) { el.value = fmtTC(Math.round((b.seconds % 86400) * fps())); hint.textContent = "läst ur filen (BWF-tidsstämpel)"; el.classList.add("from-file"); }
+    else { hint.textContent = "ingen tidsstämpel i filen – ange var bouncen börjar (SMPTE i Logic)"; el.classList.add("needs-input"); }
   } catch (e) { hint.textContent = ""; }
 }
 
