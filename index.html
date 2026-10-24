@@ -1628,7 +1628,14 @@ document.addEventListener("paste", ev => {
 });
 async function cloudCopyComments(cm, toCueId, col) {
   try {
-    const rows = cm.thread.map(e => ({ project_id: cloud.project.id, cue_id: toCueId, col: col || "comments", kind: e.k, text: e.t || "", author: cloud.user.id, author_name: e.by || cloud.profile.username }));
+    // created_at sätts uttryckligen och strikt stigande: annars får hela satsen samma tidsstämpel (now() per transaktion)
+    // och tråden kan komma i omvänd ordning → statusen (fråga/besvarad) vänds. Ursprungliga tider behålls.
+    let prev = 0;
+    const rows = cm.thread.map((e, j) => {
+      let t = Date.parse(e.ts || ""); if (isNaN(t)) t = Date.now() + j;
+      if (t <= prev) t = prev + 1; prev = t;
+      return { project_id: cloud.project.id, cue_id: toCueId, col: col || "comments", kind: e.k, text: e.t || "", author: cloud.user.id, author_name: e.by || cloud.profile.username, created_at: new Date(t).toISOString() };
+    });
     const { error } = await sb.from("comments").insert(rows);
     if (error) throw error;
     await reloadComments(); render();
