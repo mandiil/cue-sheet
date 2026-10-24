@@ -839,6 +839,7 @@ const SUPA = {
     <button class="primary admin-only" onclick="addCue()">+ Lägg till cue</button>
     <button id="det-btn" class="admin-only" onclick="toggleDetect()">Auto-detektera cuer…</button>
     <button id="tl-btn" onclick="toggleTimeline()" disabled title="Importera en AAF så byggs tidslinjen av musikspåren">Tidslinje AAF</button>
+    <button id="imp-undo" class="undo admin-only" style="display:none" onclick="undoImport()" title="Återställer listan till läget precis före senaste import/merge">↶ Ångra senaste import</button>
   </div>
   <div id="rec-area" style="display:none"></div>
   <div class="table-wrap" id="main-wrap">
@@ -4202,8 +4203,25 @@ function confirmRec() {
   closeRec();
   applyReconcile(rows, src, opt);
 }
+// Ett steg tillbaka efter import/merge: hela läget före sparas i minnet tills nästa import eller projektbyte
+let importUndo = null;
+function undoImport() {
+  if (!importUndo || !isAdmin()) return;
+  if (!confirm(`Ångra "${importUndo.label}"?\nListan återställs till läget precis före (${importUndo.n} cuer).`)) return;
+  snapshot("före ångra import", true);
+  const st = JSON.parse(importUndo.json);
+  importUndo = null;
+  applyState(st); save();
+  document.getElementById("imp-undo").style.display = "none";
+  toast("Importen ångrad");
+}
+function setImportUndo(label) {
+  importUndo = { json: JSON.stringify(state), label, n: state.cues.length };
+  const b = document.getElementById("imp-undo"); b.style.display = ""; b.textContent = "↶ Ångra " + label;
+}
 function applyReconcile(rows, src, opt) {
   snapshot("före avstämning (" + src + ")", true);
+  setImportUndo(/^AAF /.test(src) ? "AAF-importen" : src === "auto-detektering" ? "tillägget från auto-detekt" : "importen (" + src + ")");
   const hasTcout = state.columns.some(c => c.id === "tcout"), hasCut = state.columns.some(c => c.id === "filmcut");
   const missing = opt.markMissing ? recMissing(rows, opt) : [];
   const plan = recPlan(rows, opt);
@@ -5469,6 +5487,7 @@ function updateInviteBtn() {
   b.classList.toggle("admin-only", false);
 }
 function leaveProject() {
+  importUndo = null; const iu = document.getElementById("imp-undo"); if (iu) iu.style.display = "none";
   if (cloud.chan) { try { sb.removeChannel(cloud.chan); } catch (e) {} cloud.chan = null; }
   if (cloud.saveTimer) { clearTimeout(cloud.saveTimer); cloud.saveTimer = null; }
   cloud.project = null; cloud.members = []; techVals = {};
