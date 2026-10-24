@@ -140,6 +140,9 @@ const SUPA = {
   #tl-canvas { position: sticky; left: 0; display: block; cursor: crosshair; }
   tr.tl-flash td { background: rgba(212, 168, 67, 0.28) !important; transition: background 0.3s; }
   tr.tl-hover td { background: rgba(212, 168, 67, 0.14) !important; }
+  tr.row-sel td { background: rgba(212, 168, 67, 0.12) !important; }
+  tr.row-sel td:first-child { box-shadow: inset 4px 0 0 var(--accent); }
+  td.col-no, #cue-body tr > td:nth-child(2) { cursor: default; }
   tr.tl-hover td.col-no input { background: var(--accent); color: #14161a; }
   #hist-panel { display: none; }
   #hist-panel.open { display: block !important; }
@@ -1331,6 +1334,7 @@ function render() {
     }
   });
   document.getElementById("empty-msg").style.display = state.cues.length ? "none" : "block";
+  if (selRow >= 0) { const r = cueRows()[selRow]; if (r) r.classList.add("row-sel"); else selRow = -1; }
   if (keep) {
     const tr = tb.children[keep.tr], td = tr && tr.children[keep.td], el = td && td.querySelector("input, select");
     if (el) { el.focus({ preventScroll: true }); if (el.tagName === "INPUT" && el.type === "text" && keep.s != null) { if (el.value !== keep.v && !el.disabled) el.value = keep.v; try { el.setSelectionRange(keep.s, keep.e); } catch (e) {} } }
@@ -1539,44 +1543,81 @@ async function applyShiftTc() {
   toast(`${n} tidkoder flyttade ${f > 0 ? "framåt" : "bakåt"} ${fmtTC(Math.abs(f))}`);
 }
 
-// ---------- Kopiera/klistra in hel rad: Cmd/Ctrl+C i en cell utan markerad text kopierar raden, Cmd/Ctrl+V klistrar in ----------
-// Allt utom radnumret följer med (titel, status, TC, Temp, extra filer …). Kommentarstråden rörs inte.
-let rowClip = null;
+// ---------- Kopiera/klistra in hel rad ----------
+// Markera en rad genom att klicka i tomrummet vid radnumret (vänster om numret eller mellan numret och Title).
+// Cmd/Ctrl+C kopierar raden, Cmd/Ctrl+V klistrar in i den markerade raden (eller raden där markören står).
+// Allt utom radnumret följer med: titel, status, TC, Temp, extra filer … och kommentarstråden.
+let rowClip = null, selRow = -1;
 function rowOfInput(el) {
   const tb = document.getElementById("cue-body"), tr = el && el.closest ? el.closest("tr") : null;
   if (!tr || !tb.contains(tr) || tr.classList.contains("sub-row")) return -1;
   return [...tb.querySelectorAll("tr:not(.sub-row)")].indexOf(tr);
 }
+function cueRows() { return [...document.querySelectorAll("#cue-body tr:not(.sub-row)")]; }
+function selectRow(i) {
+  selRow = i;
+  cueRows().forEach((tr, k) => tr.classList.toggle("row-sel", k === i));
+  if (i >= 0 && document.activeElement && document.activeElement.tagName === "INPUT") document.activeElement.blur();
+}
+document.addEventListener("mousedown", ev => {
+  const tb = document.getElementById("cue-body"); if (!tb.contains(ev.target)) return;
+  const t = ev.target;
+  if (t.closest("input, select, button, a, textarea")) return; // klick i ett fält = ingen radmarkering
+  const tr = t.closest("tr"); if (!tr || tr.classList.contains("sub-row")) return;
+  const td = t.closest("td"); if (!td || !(td.classList.contains("col-no") || td === tr.children[1])) return; // tomrum vid numret eller cellen intill
+  ev.preventDefault();
+  const i = cueRows().indexOf(tr);
+  selectRow(selRow === i ? -1 : i);
+});
 document.addEventListener("keydown", ev => {
+  if (ev.key === "Escape" && selRow >= 0) { selectRow(-1); return; }
   if (!(ev.metaKey || ev.ctrlKey) || ev.key.toLowerCase() !== "c" || ev.shiftKey || ev.altKey) return;
-  const el = document.activeElement; if (!el || !/^(INPUT|SELECT)$/.test(el.tagName)) return;
-  if (el.tagName === "INPUT" && el.selectionStart !== el.selectionEnd) return; // markerad text → vanlig kopiering
-  const i = rowOfInput(el); if (i < 0 || !isAdmin()) return;
+  const el = document.activeElement, inInput = el && /^(INPUT|SELECT|TEXTAREA)$/.test(el.tagName);
+  if (inInput && el.tagName === "INPUT" && el.selectionStart !== el.selectionEnd) return; // markerad text → vanlig kopiering
+  const i = selRow >= 0 ? selRow : (inInput ? rowOfInput(el) : -1);
+  if (i < 0 || !isAdmin()) return;
   ev.preventDefault();
   const q = state.cues[i], f = JSON.parse(JSON.stringify(q.f || {}));
   delete f.no; delete f.missing; delete f.comments; state.columns.filter(c => c.type === "ts").forEach(c => delete f[c.id]);
-  rowClip = { f, sub: q.sub ? JSON.parse(JSON.stringify(q.sub)) : null, token: `⟪My Cue List: cue ${(q.f && q.f.no) || i + 1}⟫`, from: (q.f && q.f.no) || String(i + 1) };
-  rowClip.sys = false;
+  const cm = ensureCm(q);
+  rowClip = { f, sub: q.sub ? JSON.parse(JSON.stringify(q.sub)) : null, cm: JSON.parse(JSON.stringify(cm)), fromId: q.id,
+              token: `⟪My Cue List: cue ${(q.f && q.f.no) || i + 1}⟫`, from: (q.f && q.f.no) || String(i + 1), sys: false };
   try { navigator.clipboard.writeText(rowClip.token).then(() => { rowClip.sys = true; }).catch(() => {}); } catch (e) {}
-  const tr = el.closest("tr"); tr.classList.add("tl-flash"); setTimeout(() => tr.classList.remove("tl-flash"), 900);
-  toast(`Rad ${rowClip.from} kopierad – ställ dig i en annan rad och tryck ${ev.metaKey ? "Cmd" : "Ctrl"}+V`);
+  const tr = cueRows()[i]; if (tr) { tr.classList.add("tl-flash"); setTimeout(() => tr.classList.remove("tl-flash"), 900); }
+  toast(`Rad ${rowClip.from} kopierad – markera en annan rad (eller ställ dig i den) och tryck ${ev.metaKey ? "Cmd" : "Ctrl"}+V`);
 });
 document.addEventListener("paste", ev => {
   if (!rowClip || !isAdmin()) return;
-  const el = document.activeElement; if (!el || !/^(INPUT|SELECT)$/.test(el.tagName)) return;
-  const i = rowOfInput(el); if (i < 0) return;
+  const el = document.activeElement, inInput = el && /^(INPUT|SELECT|TEXTAREA)$/.test(el.tagName);
+  const i = selRow >= 0 ? selRow : (inInput ? rowOfInput(el) : -1);
+  if (i < 0) return;
   const text = (ev.clipboardData && ev.clipboardData.getData("text")) || "";
-  if (rowClip.sys && text && text !== rowClip.token) return; // riktig text i urklipp → vanlig inklistring (om webbläsaren lät oss lägga märklappen)
+  if (inInput && selRow < 0 && rowClip.sys && text && text !== rowClip.token) return; // riktig text i urklipp → vanlig inklistring i fältet
   ev.preventDefault();
+  if (inInput) el.blur(); // annars återställer omritningen fältets gamla text
   const q = state.cues[i], no = (q.f && q.f.no) || String(i + 1);
   snapshot(`före inklistring av rad ${rowClip.from} i rad ${no}`, true);
   if (!q.f) q.f = {};
   Object.keys(rowClip.f).forEach(k => { q.f[k] = rowClip.f[k]; });
   if (rowClip.sub) q.sub = JSON.parse(JSON.stringify(rowClip.sub)); else delete q.sub;
+  // kommentarstråden: lokalt kopieras tråden, i molnet läggs kopior in med ursprunglig författare i namnet
+  if (q.id !== rowClip.fromId && rowClip.cm && rowClip.cm.thread && rowClip.cm.thread.length) {
+    if (cloudActive()) { ensureCueIds(); cloudCopyComments(rowClip.cm, q.id); }
+    else { const cm = ensureCm(q); cm.thread = cm.thread.concat(JSON.parse(JSON.stringify(rowClip.cm.thread))); if (!cm.status) cm.status = rowClip.cm.status; }
+  }
   touchTs(q); render();
-  const tr = document.querySelectorAll("#cue-body tr:not(.sub-row)")[i]; if (tr) { tr.classList.add("tl-flash"); setTimeout(() => tr.classList.remove("tl-flash"), 1200); }
+  const tr = cueRows()[i]; if (tr) { tr.classList.add("tl-flash"); setTimeout(() => tr.classList.remove("tl-flash"), 1200); }
+  selectRow(-1);
   toast(`Rad ${rowClip.from} inklistrad i rad ${no} (numret behålls)`);
 });
+async function cloudCopyComments(cm, toCueId) {
+  try {
+    const rows = cm.thread.map(e => ({ project_id: cloud.project.id, cue_id: toCueId, kind: e.k, text: e.t || "", author: cloud.user.id, author_name: e.by || cloud.profile.username }));
+    const { error } = await sb.from("comments").insert(rows);
+    if (error) throw error;
+    await reloadComments(); render();
+  } catch (e) { toast("Kunde inte kopiera kommentarerna: " + (e.message || e)); }
+}
 
 // ---------- Slå ihop två cuer: dra No. på en rad och släpp på en annan ----------
 let dragCue = -1;
